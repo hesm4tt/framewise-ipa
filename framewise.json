@@ -1,7 +1,7 @@
 {
   "name": "Framewise",
   "identifier": "com.framewise.source",
-  "sourceURL": "https://raw.githubusercontent.com/hesm4tt/framewise-ipa/main/framewise.json",
+  "sourceURL": "https://github.com/hesm4tt/framewise-ipa/releases/latest/download/framewise.json",
   "apps": [
     {
       "name": "Framewise",

@@ -26,7 +26,7 @@
           "version": "1.2",
           "date": "2026-09-27",
           "downloadURL": "https://github.com/hesm4tt/framewise-ipa/releases/download/v1.2/Framewise.ipa",
-          "size": 8572861,
+          "size": 8572976,
           "minOSVersion": "15.0",
           "localizedDescription": "First-run camera walkthrough, on-device object labels and tracking, tap-to-lock subject selection, move-phone cues, and smooth one-tap continuous zoom suggestions."
         },

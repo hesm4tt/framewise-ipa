@@ -1,0 +1,40 @@
+{
+  "name": "Framewise",
+  "identifier": "com.framewise.source",
+  "sourceURL": "https://raw.githubusercontent.com/hesm4tt/framewise-ipa/main/framewise.json",
+  "apps": [
+    {
+      "name": "Framewise",
+      "bundleIdentifier": "com.framewise.camera",
+      "developerName": "Framewise",
+      "localizedDescription": "A camera composition guide with on-device analysis and local photo tools.",
+      "iconURL": "https://raw.githubusercontent.com/hesm4tt/framewise-ipa/main/framewise-icon.png",
+      "subtitle": "Compose the shot you have in mind",
+      "tintColor": "#17181C",
+      "permissions": [
+        {
+          "type": "camera",
+          "usageDescription": "Live preview and capture photos."
+        },
+        {
+          "type": "motion",
+          "usageDescription": "Level and horizon guidance."
+        },
+        {
+          "type": "photos",
+          "usageDescription": "Save and review your photos on device."
+        }
+      ],
+      "versions": [
+        {
+          "version": "1.0",
+          "date": "2026-09-27",
+          "downloadURL": "https://github.com/hesm4tt/framewise-ipa/releases/download/v1.0/Framewise.ipa",
+          "size": 325311,
+          "minOSVersion": "15.0",
+          "localizedDescription": "Initial release."
+        }
+      ]
+    }
+  ]
+}

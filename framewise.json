@@ -7,7 +7,7 @@
       "name": "Framewise",
       "bundleIdentifier": "com.framewise.camera",
       "developerName": "Framewise",
-      "localizedDescription": "A camera composition guide with on-device analysis and local photo tools.",
+      "localizedDescription": "On-device subject tracking with movement cues, smooth suggested zoom, and local camera tools.",
       "iconURL": "https://raw.githubusercontent.com/hesm4tt/framewise-ipa/main/framewise-icon.png",
       "subtitle": "Compose the shot you have in mind",
       "tintColor": "#17181C",
@@ -19,13 +19,17 @@
         {
           "type": "motion",
           "usageDescription": "Level and horizon guidance."
-        },
-        {
-          "type": "photos",
-          "usageDescription": "Save and review your photos on device."
         }
       ],
       "versions": [
+        {
+          "version": "1.2",
+          "date": "2026-09-27",
+          "downloadURL": "https://github.com/hesm4tt/framewise-ipa/releases/download/v1.2/Framewise.ipa",
+          "size": 8572861,
+          "minOSVersion": "15.0",
+          "localizedDescription": "First-run camera walkthrough, on-device object labels and tracking, tap-to-lock subject selection, move-phone cues, and smooth one-tap continuous zoom suggestions."
+        },
         {
           "version": "1.1",
           "date": "2026-09-27",

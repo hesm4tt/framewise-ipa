@@ -240,7 +240,6 @@ final class CameraEngine: NSObject, ObservableObject {
             let settings: AVCapturePhotoSettings
             if let rawFormat, let processedFormat {
                 settings = AVCapturePhotoSettings(rawPixelFormatType: rawFormat, processedFormat: processedFormat)
-                settings.isAutoStillImageStabilizationEnabled = false
             } else if let processedFormat {
                 settings = AVCapturePhotoSettings(format: processedFormat)
                 if shouldCaptureRaw {
@@ -754,7 +753,7 @@ private final class SubjectAnalyzer: NSObject, AVCaptureVideoDataOutputSampleBuf
 
     private func ensureModel() -> VNCoreMLRequest? {
         if let modelRequest { return modelRequest }
-        if let modelLoadError { return nil }
+        if modelLoadError != nil { return nil }
         do {
             guard let url = Bundle.main.url(forResource: "YOLOv3TinyInt8LUT", withExtension: "mlmodelc") else {
                 throw NSError(domain: "Framewise.Model", code: 1, userInfo: [NSLocalizedDescriptionKey: "The on-device subject model is missing from the app bundle."])

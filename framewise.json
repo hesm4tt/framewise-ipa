@@ -7,7 +7,7 @@
       "name": "Framewise",
       "bundleIdentifier": "com.framewise.camera",
       "developerName": "Framewise",
-      "localizedDescription": "On-device object detection with tap-priority subject tracking, movement cues, suggested zoom, and local camera tools.",
+      "localizedDescription": "On-device subject tracking, movement cues, optical zoom stops matched to the iPhone camera system, and optional RAW capture.",
       "iconURL": "https://raw.githubusercontent.com/hesm4tt/framewise-ipa/main/framewise-icon.png",
       "subtitle": "Compose the shot you have in mind",
       "tintColor": "#17181C",
@@ -22,6 +22,14 @@
         }
       ],
       "versions": [
+        {
+          "version": "1.4",
+          "date": "2026-10-02",
+          "downloadURL": "https://github.com/hesm4tt/framewise-ipa/releases/download/v1.4/Framewise.ipa",
+          "size": 8597713,
+          "minOSVersion": "15.0",
+          "localizedDescription": "On-device subject tracking, movement cues, smooth suggested zoom, device-matched optical stops, and optional RAW capture."
+        },
         {
           "version": "1.3",
           "date": "2026-09-27",

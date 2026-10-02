@@ -26,7 +26,7 @@
           "version": "1.4",
           "date": "2026-10-02",
           "downloadURL": "https://github.com/hesm4tt/framewise-ipa/releases/download/v1.4/Framewise.ipa",
-          "size": 8597713,
+          "size": 8597646,
           "minOSVersion": "15.0",
           "localizedDescription": "On-device subject tracking, movement cues, smooth suggested zoom, device-matched optical stops, and optional RAW capture."
         },

@@ -79,6 +79,7 @@ PY
 }
 
 publish_repository_file "$FEED" "framewise.json" "Publish Framewise SideStore feed update"
+publish_repository_file "$FEED" "distribution/framewise.json" "Sync Framewise source SideStore feed"
 publish_repository_file "$DIST_README" "README.md" "Update Framewise install instructions"
 
 PUBLISHED_FEED="$ROOT/build/framewise-published-feed.json"

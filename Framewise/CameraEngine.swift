@@ -866,7 +866,7 @@ final class CameraEngine: NSObject, ObservableObject {
             } else {
                 movementSymbol = "arrow." + directions[0]
             }
-            guidance = "Bring \(subjectLabel.lowercased()) toward the center"
+            guidance = "Bring \(subjectLabel.lowercased()) into the fixed frame"
         }
 
         if box.width < 0.34 {

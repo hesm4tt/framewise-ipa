@@ -26,7 +26,7 @@ An on-device camera guide that helps you find your subject, refine the frame, an
 Framewise scans one temporary camera still, then guides you to re-aim, centers the chosen subject with motion sensors, and eases to an ideal zoom before the full-resolution shutter photo.
 
 - One-shot subject detection on device by default. Optionally enable OpenRouter vision scans for stronger subject and group selection; tap a subject to retarget. Analysis does not run on every preview frame.
-- A motion-anchored subject marker and clear move-the-phone cues. The camera eases to the scan’s ideal zoom when the target reaches center.
+- A motion-anchored subject marker moves over the live scene while a dashed frame target stays fixed at screen center. Clear move-the-phone cues guide the marker into the frame; the camera eases to the scan’s ideal zoom when centered.
 - The scan image is orientation-corrected, reduced to 768 px, and JPEG-compressed. It is processed locally unless you enable OpenRouter; it is never used as the final photo.
 - Zoom controls adapt to the iPhone’s physical lenses and sensor resolution, so each model gets its own optical and optical-quality stops.
 - Full-resolution processed capture, optional RAW + processed DNG capture, local film looks, and a private in-app gallery.

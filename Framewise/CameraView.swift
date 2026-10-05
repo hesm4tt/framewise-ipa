@@ -513,7 +513,7 @@ struct CameraView: View {
     private var firstRunGuide: some View {
         let pages: [(String, String, String)] = [
             ("Make every photo\nfeel intentional.", "Scan one camera frame, then follow a quiet guide to shape the shot you already see.", "viewfinder"),
-            ("Scan. Aim.\nCompose.", "A target is picked on your iPhone. Move until it centers; the camera eases to its ideal zoom.", "scope"),
+            ("Scan. Aim.\nCompose.", "A target is picked on your iPhone. Move until its marker enters the fixed frame; the camera eases to its ideal zoom.", "scope"),
             ("Ready when\nyou are.", "Your final photo is captured at full camera quality. The scan frame is never used as the photo.", "camera.aperture")
         ]
         let page = pages[min(onboardingPage, pages.count - 1)]
@@ -701,8 +701,17 @@ private struct SubjectMarker: View {
         )
         let marker = CGPoint(x: rect.midX, y: rect.midY)
         let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        let frameWidth = min(contentWidth * 0.40, size.width * 0.76)
+        let frameHeight = min(contentHeight * 0.34, size.height * 0.40)
+        let frameRect = CGRect(
+            x: center.x - frameWidth / 2,
+            y: center.y - frameHeight / 2,
+            width: frameWidth,
+            height: frameHeight
+        )
         let labelX = min(max(rect.midX, 68), max(68, size.width - 68))
         let labelY = min(max(rect.maxY + 20, 62), max(62, size.height - 45))
+        let targetColor = isReady ? Color.green : FramewiseStyle.accent
 
         ZStack {
             Path { path in
@@ -711,18 +720,36 @@ private struct SubjectMarker: View {
             }
             .stroke(.white.opacity(0.9), style: StrokeStyle(lineWidth: 1.25, dash: [4, 6]))
 
+            RoundedRectangle(cornerRadius: 20)
+                .stroke(targetColor, style: StrokeStyle(lineWidth: 2.2, dash: [8, 5]))
+                .frame(width: frameRect.width, height: frameRect.height)
+                .position(center)
+                .shadow(color: targetColor.opacity(0.36), radius: 8)
+
+            Text("FRAME TARGET")
+                .font(.system(size: 8, weight: .heavy, design: .monospaced))
+                .tracking(0.8)
+                .foregroundStyle(.black)
+                .padding(.horizontal, 9)
+                .frame(height: 21)
+                .background(targetColor, in: Capsule())
+                .position(x: center.x, y: max(16, frameRect.minY - 14))
+
             Circle().stroke(.white.opacity(0.92), lineWidth: 1.5).frame(width: 34, height: 34).position(center)
-            Circle().stroke(isReady ? Color.green : FramewiseStyle.accent, lineWidth: 2).frame(width: 21, height: 21).position(center)
+            Circle().stroke(targetColor, lineWidth: 2).frame(width: 21, height: 21).position(center)
             Image(systemName: "plus")
                 .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(.white)
                 .position(center)
 
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(isReady ? Color.green : FramewiseStyle.accent, style: StrokeStyle(lineWidth: 2.2, dash: [8, 5]))
-                .frame(width: max(rect.width, 46), height: max(rect.height, 52))
+            Circle()
+                .stroke(targetColor, lineWidth: 2)
+                .frame(width: 30, height: 30)
                 .position(marker)
-                .shadow(color: (isReady ? Color.green : FramewiseStyle.accent).opacity(0.36), radius: 8)
+            Circle()
+                .fill(targetColor)
+                .frame(width: 5, height: 5)
+                .position(marker)
 
             HStack(spacing: 5) {
                 Circle().fill(.black.opacity(0.75)).frame(width: 5, height: 5)
@@ -734,7 +761,7 @@ private struct SubjectMarker: View {
             .foregroundStyle(.black)
             .padding(.horizontal, 10)
             .frame(height: 24)
-            .background(isReady ? Color.green : FramewiseStyle.accent, in: Capsule())
+            .background(targetColor, in: Capsule())
             .position(x: labelX, y: labelY)
         }
         .animation(.spring(response: 0.32, dampingFraction: 0.78), value: box)

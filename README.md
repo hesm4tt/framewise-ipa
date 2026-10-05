@@ -23,10 +23,10 @@ An on-device camera guide that helps you find your subject, refine the frame, an
 
 ## A little more intention in every frame
 
-Framewise scans one temporary camera still, then guides you to re-aim, centers the chosen subject with motion sensors, and eases to an ideal zoom before the full-resolution shutter photo.
+Framewise scans one temporary camera still, then follows the recovered Framed-style point/gyroscope guide: re-aim toward the fixed frame, hold the target near center for 600 ms, and let the camera ease to its ideal zoom before the full-resolution shutter photo.
 
 - One-shot subject detection on device by default. Optionally enable OpenRouter vision scans for stronger subject and group selection; tap a subject to retarget. Analysis does not run on every preview frame.
-- A motion-anchored subject marker moves over the live scene while a dashed frame target stays fixed at screen center. Clear move-the-phone cues guide the marker into the frame; the camera eases to the scan’s ideal zoom when centered.
+- A gyroscope-anchored subject reticle moves over the live scene while the dashed frame target stays fixed at screen center. Direction cues use the Framed 0.4/0.6 guide bands; a 0.06-radius dwell longer than 600 ms locks and centers the reticle before the camera eases to the ideal zoom.
 - The scan image is orientation-corrected, reduced to 768 px, and JPEG-compressed. It is processed locally unless you enable OpenRouter; it is never used as the final photo.
 - Zoom controls adapt to the iPhone’s physical lenses and sensor resolution, so each model gets its own optical and optical-quality stops.
 - Full-resolution processed capture, optional RAW + processed DNG capture, local film looks, and a private in-app gallery.
@@ -76,7 +76,7 @@ The `main` branch includes the complete Xcode project, Swift source, and bundled
 ./scripts/package-ipa.sh
 ```
 
-The scan flow uses one temporary still and a single analysis: local Vision inference by default, or an opt-in OpenRouter free vision request when configured. OpenRouter receives the 768 px scan JPEG; if that request fails, local inference runs. A motion-anchored target point guides physical re-aiming using gyroscope samples at about 32 ms. The fixed frame target stays at screen center; the subject reticle follows phone movement without repeated visual detection. Lock requires the target to remain within a 0.06-radius center zone for more than 600 ms. Framewise then snaps the reticle to center, eases to the ideal camera zoom, and shows ready about 900 ms after lock. The shutter captures the camera’s full-resolution output at its current zoom. There is no final-photo crop. Zoom choices derive from the device’s physical lenses and sensor sizes. RAW is optional because DNG files are larger and may omit some computational processing. Framewise keeps the original full-resolution processed image with the edited version, and saves a DNG sidecar when RAW is enabled. ProRAW is used where the current camera configuration supports it; otherwise, Framewise uses Bayer RAW.
+The scan flow uses one temporary still and a single analysis: local Vision inference by default, or an opt-in OpenRouter free vision request when configured. OpenRouter receives the 768 px scan JPEG; if that request fails, local inference runs. A point derived from the selected subject is tracked with 32 ms gyroscope samples; the reticle latches after a 600 ms centered dwell, then Framewise animates the camera zoom. The shutter then captures the camera’s full-resolution output at its current zoom. There is no final-photo crop. Zoom choices derive from the device’s physical lenses and sensor sizes. RAW is optional because DNG files are larger and may omit some computational processing. Framewise keeps the original full-resolution processed image with the edited version, and saves a DNG sidecar when RAW is enabled. ProRAW is used where the current camera configuration supports it; otherwise, Framewise uses Bayer RAW.
 
 To publish a new IPA and refresh the SideStore feed, set the version/build in `Framewise.xcodeproj/project.pbxproj` and run `./scripts/publish-ipa.sh` with an authenticated GitHub CLI.
 

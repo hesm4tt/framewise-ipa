@@ -1,8 +1,8 @@
 import Foundation
 import UIKit
 
-/// Small, local-only diagnostic log that can be exported from the camera menu.
-/// It records camera/Vision metadata and errors, never photo or video content.
+/// Small diagnostic log that can be exported from the camera menu.
+/// It records camera/Vision/OpenRouter status metadata and errors, never photo or video content or API keys.
 final class AppDiagnostics {
     static let shared = AppDiagnostics()
 

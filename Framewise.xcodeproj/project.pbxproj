@@ -80,6 +80,20 @@
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
+		<key>AC0000000000000000000003</key>
+		<dict>
+			<key>fileRef</key>
+			<string>AC0000000000000000000004</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>AC0000000000000000000005</key>
+		<dict>
+			<key>fileRef</key>
+			<string>AC0000000000000000000006</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
 		<key>A20000000000000000000001</key>
 		<dict>
 			<key>isa</key>
@@ -201,6 +215,28 @@
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
+		<key>AC0000000000000000000004</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>OpenRouterAI.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>AC0000000000000000000006</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>OpenRouterSettingsView.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
 		<key>A30000000000000000000001</key>
 		<dict>
 			<key>explicitFileType</key>
@@ -240,6 +276,8 @@
 				<string>A10000000000000000000007</string>
 				<string>A10000000000000000000008</string>
 				<string>AC0000000000000000000001</string>
+				<string>AC0000000000000000000003</string>
+				<string>AC0000000000000000000005</string>
 			</array>
 			<key>isa</key>
 			<string>PBXSourcesBuildPhase</string>
@@ -286,6 +324,8 @@
 				<string>A20000000000000000000009</string>
 				<string>A20000000000000000000010</string>
 				<string>AC0000000000000000000002</string>
+				<string>AC0000000000000000000004</string>
+				<string>AC0000000000000000000006</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -415,7 +455,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>6</string>
+				<string>7</string>
 				<key>GENERATE_INFOPLIST_FILE</key>
 				<string>NO</string>
 				<key>INFOPLIST_FILE</key>
@@ -423,7 +463,7 @@
 				<key>IPHONEOS_DEPLOYMENT_TARGET</key>
 				<string>15.0</string>
 				<key>MARKETING_VERSION</key>
-				<string>1.5</string>
+				<string>1.6</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.framewise.camera</string>
 				<key>PRODUCT_NAME</key>
@@ -453,7 +493,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>6</string>
+				<string>7</string>
 				<key>GENERATE_INFOPLIST_FILE</key>
 				<string>NO</string>
 				<key>INFOPLIST_FILE</key>
@@ -461,7 +501,7 @@
 				<key>IPHONEOS_DEPLOYMENT_TARGET</key>
 				<string>15.0</string>
 				<key>MARKETING_VERSION</key>
-				<string>1.5</string>
+				<string>1.6</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.framewise.camera</string>
 				<key>PRODUCT_NAME</key>

@@ -23,6 +23,7 @@ struct CameraView: View {
     @State private var reviewRawFormatName: String?
     @State private var showPermissionAlert = false
     @State private var showDiagnosticsShare = false
+    @State private var showAIScanSettings = false
     @State private var diagnosticsURL: URL?
     @State private var onboardingPage = 0
 
@@ -199,6 +200,11 @@ struct CameraView: View {
 
             Menu {
                 Button {
+                    showAIScanSettings = true
+                } label: {
+                    Label("OpenRouter AI scan settings", systemImage: "sparkles")
+                }
+                Button {
                     showGrid.toggle()
                 } label: {
                     Label(showGrid ? "Hide composition grid" : "Show composition grid", systemImage: "grid")
@@ -247,6 +253,9 @@ struct CameraView: View {
                     .background(.black.opacity(0.42), in: Circle())
             }
             .accessibilityLabel("Camera options")
+            .sheet(isPresented: $showAIScanSettings) {
+                OpenRouterSettingsView()
+            }
         }
         .foregroundStyle(.white)
     }
@@ -270,11 +279,17 @@ struct CameraView: View {
                     .foregroundStyle(.white)
                 if camera.isScanning {
                     Text(camera.isScanPending
-                         ? "ONE FRAME · ANALYZED ON THIS IPHONE"
+                         ? "ONE FRAME · \(camera.scanAnalysisLabel)"
                          : "TAP A SUBJECT TO SCAN AND RETARGET")
                         .font(.system(size: 8, weight: .bold, design: .monospaced))
                         .tracking(0.55)
                         .foregroundStyle(.white.opacity(0.58))
+                }
+                if let tip = camera.subjectFramingTip, camera.isScanning, !camera.isScanPending {
+                    Text("AI TIP · \(tip)")
+                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        .lineLimit(2)
+                        .foregroundStyle(FramewiseStyle.accent.opacity(0.92))
                 }
             }
 
@@ -567,7 +582,7 @@ struct CameraView: View {
                     .background(FramewiseStyle.accent, in: Capsule())
                 }
                 .buttonStyle(.plain)
-                Text("ON DEVICE · NO ACCOUNT · NO SUBSCRIPTION")
+                Text("LOCAL BY DEFAULT · OPENROUTER OPTIONAL")
                     .font(.system(size: 8, weight: .medium, design: .monospaced))
                     .tracking(0.8)
                     .foregroundStyle(.white.opacity(0.42))

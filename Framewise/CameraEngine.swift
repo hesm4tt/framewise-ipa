@@ -23,6 +23,8 @@ final class CameraEngine: NSObject, ObservableObject {
     @Published private(set) var isScanPending = false
     @Published private(set) var isZoomingToIdeal = false
     @Published private(set) var guidance = "Tap ✦ to scan this scene"
+    @Published private(set) var scanAnalysisLabel = "ON DEVICE"
+    @Published private(set) var subjectFramingTip: String?
     @Published private(set) var movementInstruction = "Point at a subject"
     @Published private(set) var movementSymbol = "viewfinder"
     @Published private(set) var suggestedZoom: CGFloat?
@@ -262,6 +264,8 @@ final class CameraEngine: NSObject, ObservableObject {
 
         isScanning = true
         isScanPending = true
+        let openRouterAPIKey = OpenRouterPreferences.enabledAPIKey()
+        scanAnalysisLabel = openRouterAPIKey == nil ? "ANALYZED ON THIS IPHONE" : "SENT TO OPENROUTER"
         scanHasProducedResult = false
         isFramingReady = false
         subjectBox = nil
@@ -270,6 +274,7 @@ final class CameraEngine: NSObject, ObservableObject {
         pendingScanReferenceAngles = latestMotionAngles
         pendingScanZoom = currentZoom
         subjectLabel = "Subject"
+        subjectFramingTip = nil
         isSubjectLocked = selectionPoint != nil
         suggestedZoom = nil
         idealZoom = nil
@@ -278,12 +283,14 @@ final class CameraEngine: NSObject, ObservableObject {
         zoomAnimationID = UUID()
         didApplyIdealZoom = false
         userAdjustedZoomForScan = false
-        guidance = "Capturing one frame for on-device analysis…"
+        guidance = openRouterAPIKey == nil
+            ? "Capturing one frame for on-device analysis…"
+            : "Capturing one frame for OpenRouter AI…"
         movementInstruction = "Hold still"
         movementSymbol = "camera.metering.center.weighted"
         activeScanID = UUID()
         let scanID = activeScanID
-        AppDiagnostics.shared.log("scan", "One-shot on-device scan requested · selectionPoint=\(selectionPoint.map(Self.pointDescription) ?? "automatic") · cameraZoom=\(currentZoom)x")
+        AppDiagnostics.shared.log("scan", "One-shot scan requested · mode=\(openRouterAPIKey == nil ? "on-device" : "openrouter") · selectionPoint=\(selectionPoint.map(Self.pointDescription) ?? "automatic") · cameraZoom=\(currentZoom)x")
 
         sessionQueue.async { [weak self] in
             guard let self else { return }
@@ -322,7 +329,11 @@ final class CameraEngine: NSObject, ObservableObject {
                 switch result {
                 case let .success(data):
                     self.analysisQueue.async {
-                        self.subjectAnalyzer.analyzeScanPhoto(data, selectionPoint: selectionPoint) { result in
+                        self.subjectAnalyzer.analyzeScanPhoto(
+                            data,
+                            selectionPoint: selectionPoint,
+                            openRouterAPIKey: openRouterAPIKey
+                        ) { result in
                             Task { @MainActor in
                                 guard self.activeScanID == scanID, self.isScanning else { return }
                                 self.finishScan(result, scanID: scanID)
@@ -352,14 +363,16 @@ final class CameraEngine: NSObject, ObservableObject {
         scanHasProducedResult = true
         previewFrameAspectRatio = result.frameAspectRatio
         subjectLabel = result.label ?? "Subject"
+        subjectFramingTip = result.framingTip
         isSubjectLocked = result.isManuallySelected
         scanAnchorBox = result.box
         scanStartZoom = pendingScanZoom
         scanReferenceAngles = pendingScanReferenceAngles ?? latestMotionAngles
         subjectBox = result.box
+        let diagnosticSubject = result.source.hasPrefix("openrouter:") ? "redacted" : (result.label ?? "none")
         AppDiagnostics.shared.log(
             "scan",
-            "Local scan completed · source=\(result.source) · subject=\(result.label ?? "none") · confidence=\(String(format: "%.2f", result.confidence)) · candidates=\(result.candidateCount) · jpegBytes=\(result.scanJPEGBytes) · point=\(result.box.map { Self.pointDescription(CGPoint(x: $0.midX, y: 1 - $0.midY)) } ?? "none") · box=\(result.box.map(Self.boxDescription) ?? "none") · frameRatio=\(result.frameAspectRatio)"
+            "Scan completed · source=\(result.source) · subject=\(diagnosticSubject) · confidence=\(String(format: "%.2f", result.confidence)) · candidates=\(result.candidateCount) · jpegBytes=\(result.scanJPEGBytes) · point=\(result.box.map { Self.pointDescription(CGPoint(x: $0.midX, y: 1 - $0.midY)) } ?? "none") · box=\(result.box.map(Self.boxDescription) ?? "none") · frameRatio=\(result.frameAspectRatio)"
         )
 
         guard result.errorDescription == nil, let box = result.box else {
@@ -996,6 +1009,7 @@ private struct SceneAnalysisResult {
     let confidence: Float
     let candidateCount: Int
     let scanJPEGBytes: Int
+    let framingTip: String?
 
     init(
         box: CGRect?,
@@ -1006,7 +1020,8 @@ private struct SceneAnalysisResult {
         frameAspectRatio: CGFloat,
         confidence: Float = 0,
         candidateCount: Int = 0,
-        scanJPEGBytes: Int = 0
+        scanJPEGBytes: Int = 0,
+        framingTip: String? = nil
     ) {
         self.box = box
         self.label = label
@@ -1017,6 +1032,7 @@ private struct SceneAnalysisResult {
         self.confidence = confidence
         self.candidateCount = candidateCount
         self.scanJPEGBytes = scanJPEGBytes
+        self.framingTip = framingTip
     }
 }
 
@@ -1033,24 +1049,72 @@ private final class SubjectAnalyzer: NSObject {
     func analyzeScanPhoto(
         _ photoData: Data,
         selectionPoint: CGPoint?,
+        openRouterAPIKey: String?,
         completion: @escaping (SceneAnalysisResult) -> Void
     ) {
-        let startedAt = ProcessInfo.processInfo.systemUptime
         guard let (scanJPEG, scanImage) = Self.makeCompactScanImage(from: photoData) else {
             completion(SceneAnalysisResult(
                 box: nil,
                 label: nil,
                 isManuallySelected: selectionPoint != nil,
                 source: "preprocessError",
-                errorDescription: "Couldn’t prepare the camera frame for on-device analysis. Scan again.",
+                errorDescription: "Couldn’t prepare the camera frame for analysis. Scan again.",
                 frameAspectRatio: 0.75
             ))
             return
         }
 
         let aspectRatio = CGFloat(scanImage.width) / CGFloat(max(1, scanImage.height))
+        if let openRouterAPIKey {
+            OpenRouterScanner.scan(jpegData: scanJPEG, selectionPoint: selectionPoint, apiKey: openRouterAPIKey) { result in
+                switch result {
+                case let .success(remoteResult):
+                    completion(SceneAnalysisResult(
+                        box: remoteResult.box,
+                        label: remoteResult.label,
+                        isManuallySelected: selectionPoint != nil,
+                        source: "openrouter:\(OpenRouterScanner.modelID)",
+                        errorDescription: nil,
+                        frameAspectRatio: aspectRatio,
+                        confidence: remoteResult.confidence,
+                        candidateCount: 1,
+                        scanJPEGBytes: scanJPEG.count,
+                        framingTip: remoteResult.framingTip
+                    ))
+                case let .failure(error):
+                    AppDiagnostics.shared.log("openrouter", "Using local scan fallback · code=\(error.diagnosticCode)")
+                    self.analyzeLocally(
+                        scanJPEG: scanJPEG,
+                        scanImage: scanImage,
+                        selectionPoint: selectionPoint,
+                        remoteFallbackCode: error.diagnosticCode,
+                        completion: completion
+                    )
+                }
+            }
+            return
+        }
+
+        analyzeLocally(
+            scanJPEG: scanJPEG,
+            scanImage: scanImage,
+            selectionPoint: selectionPoint,
+            remoteFallbackCode: nil,
+            completion: completion
+        )
+    }
+
+    private func analyzeLocally(
+        scanJPEG: Data,
+        scanImage: CGImage,
+        selectionPoint: CGPoint?,
+        remoteFallbackCode: String?,
+        completion: @escaping (SceneAnalysisResult) -> Void
+    ) {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let aspectRatio = CGFloat(scanImage.width) / CGFloat(max(1, scanImage.height))
         var candidates: [DetectedSubject] = []
-        var requestError: String?
+        var requestError: String? = remoteFallbackCode
         var source = "YOLOv3Tiny"
         if let request = ensureModel() {
             do {
@@ -1099,9 +1163,17 @@ private final class SubjectAnalyzer: NSObject {
             selected = Self.bestCandidate(in: candidates)
         }
 
-        let errorDescription = selected == nil && requestError != nil
-            ? "On-device subject scan failed. Tap a subject to frame it manually or scan again."
-            : nil
+        if remoteFallbackCode != nil {
+            source = "localFallback(\(source))"
+        }
+        let errorDescription: String?
+        if selected == nil && remoteFallbackCode != nil {
+            errorDescription = "OpenRouter was unavailable and the local scan found no subject. Tap a subject to frame it manually or scan again."
+        } else if selected == nil && requestError != nil {
+            errorDescription = "On-device subject scan failed. Tap a subject to frame it manually or scan again."
+        } else {
+            errorDescription = nil
+        }
         let elapsed = Int((ProcessInfo.processInfo.systemUptime - startedAt) * 1_000)
         let result = SceneAnalysisResult(
             box: selected?.box,
@@ -1116,7 +1188,7 @@ private final class SubjectAnalyzer: NSObject {
         )
         AppDiagnostics.shared.log(
             "vision",
-            "One-shot scan inference finished · ms=\(elapsed) · image=\(scanImage.width)x\(scanImage.height) · jpegBytes=\(scanJPEG.count) · candidates=\(candidates.count) · source=\(source) · selected=\(selected?.label ?? "none") · box=\(selected.map { Self.boxText($0.box) } ?? "none") · network=none"
+            "One-shot local scan inference finished · ms=\(elapsed) · image=\(scanImage.width)x\(scanImage.height) · jpegBytes=\(scanJPEG.count) · candidates=\(candidates.count) · source=\(source) · selected=\(selected?.label ?? "none") · box=\(selected.map { Self.boxText($0.box) } ?? "none")"
         )
         completion(result)
     }

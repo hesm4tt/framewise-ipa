@@ -25,12 +25,12 @@ An on-device camera guide that helps you find your subject, refine the frame, an
 
 Framewise scans one temporary camera still, then follows the recovered Framed-style point/gyroscope guide: re-aim toward the fixed frame, hold the target near center for 600 ms, and let the camera ease to its ideal zoom before the full-resolution shutter photo.
 
-- One-shot subject detection on device by default. Optionally enable OpenRouter vision scans for stronger subject and group selection; tap a subject to retarget. Analysis does not run on every preview frame.
+- One-shot subject detection on device by default. Optionally choose OpenRouter, Groq, or Gemini for cloud vision scans; tap a subject to retarget. Analysis does not run on every preview frame.
 - A gyroscope-anchored subject reticle moves over the live scene while the dashed frame target stays fixed at screen center. Direction cues use the Framed 0.4/0.6 guide bands; a 0.06-radius dwell longer than 600 ms locks and centers the reticle before the camera eases to the ideal zoom.
-- The scan image is orientation-corrected, reduced to 768 px, and JPEG-compressed. It is processed locally unless you enable OpenRouter; it is never used as the final photo.
+- The scan image is orientation-corrected, reduced to 768 px, and JPEG-compressed. It is processed locally unless you enable a cloud provider; it is never used as the final photo.
 - Zoom controls adapt to the iPhone’s physical lenses and sensor resolution, so each model gets its own optical and optical-quality stops.
 - Full-resolution processed capture, optional RAW + processed DNG capture, local film looks, and a private in-app gallery.
-- Bundled Core ML and Apple Vision processing with local fallback. Optional OpenRouter mode uses your own key and a free vision model; cloud scans are opt-in.
+- Bundled Core ML and Apple Vision processing with local fallback. Optional OpenRouter, Groq, and Gemini modes use your own API key; cloud scans are opt-in.
 
 ## Install with the method you already use
 
@@ -66,7 +66,7 @@ The source follows the latest release, so you can install and update Framewise f
 
 ## Privacy and cost
 
-By default, camera analysis, composition guidance, and photo treatments run on your iPhone. If you enable OpenRouter in **Camera options → OpenRouter AI scan settings** and add your own API key, each scan sends only its reduced 768 px JPEG frame to OpenRouter and the model provider. Framewise is pinned to a free vision model and does not select paid models; OpenRouter controls free availability and request limits. If cloud scanning fails, the bundled on-device detector takes over. Full-resolution photos are never sent for analysis and stay in Framewise’s private app library unless you choose to share them.
+By default, camera analysis, composition guidance, and photo treatments run on your iPhone. In **Camera options → Cloud AI scan settings**, choose OpenRouter, Groq, or Gemini and add that provider’s own API key to enable cloud scans. Framewise sends only the reduced 768 px JPEG frame; the full-resolution photo stays on your iPhone. Each provider controls model availability, quotas, pricing, and data policies, so check its current terms before enabling scans. If a cloud scan fails, the bundled on-device detector takes over. Full-resolution photos stay in Framewise’s private app library unless you choose to share them.
 
 ## Build from source
 
@@ -76,7 +76,7 @@ The `main` branch includes the complete Xcode project, Swift source, and bundled
 ./scripts/package-ipa.sh
 ```
 
-The scan flow uses one temporary still and a single analysis: local Vision inference by default, or an opt-in OpenRouter free vision request when configured. OpenRouter receives the 768 px scan JPEG; if that request fails, local inference runs. A point derived from the selected subject is tracked with 32 ms gyroscope samples; the reticle latches after a 600 ms centered dwell, then Framewise animates the camera zoom. The shutter then captures the camera’s full-resolution output at its current zoom. There is no final-photo crop. Zoom choices derive from the device’s physical lenses and sensor sizes. RAW is optional because DNG files are larger and may omit some computational processing. Framewise keeps the original full-resolution processed image with the edited version, and saves a DNG sidecar when RAW is enabled. ProRAW is used where the current camera configuration supports it; otherwise, Framewise uses Bayer RAW.
+The scan flow uses one temporary still and a single analysis: local Vision inference by default, or an opt-in OpenRouter, Groq, or Gemini vision request when configured. The selected provider receives the 768 px scan JPEG; if that request fails, local inference runs. A point derived from the selected subject is tracked with 32 ms gyroscope samples; the reticle latches after a 600 ms centered dwell, then Framewise animates the camera zoom. The shutter then captures the camera’s full-resolution output at its current zoom. There is no final-photo crop. Zoom choices derive from the device’s physical lenses and sensor sizes. RAW is optional because DNG files are larger and may omit some computational processing. Framewise keeps the original full-resolution processed image with the edited version, and saves a DNG sidecar when RAW is enabled. ProRAW is used where the current camera configuration supports it; otherwise, Framewise uses Bayer RAW.
 
 To publish a new IPA and refresh the SideStore feed, set the version/build in `Framewise.xcodeproj/project.pbxproj` and run `./scripts/publish-ipa.sh` with an authenticated GitHub CLI.
 

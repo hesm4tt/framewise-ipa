@@ -152,7 +152,7 @@ Capture a separate photo at the active camera zoom using the highest dimensions/
 The current project implements the same user flow with native camera, scan, and display components. Inspect these files before adding a second scanner or tracker:
 
 - [CameraEngine.swift](../Framewise/CameraEngine.swift) — AVFoundation session, temporary scan capture, one-shot analysis dispatch, motion baseline/projection, zoom, framing readiness, and final still/optional RAW capture.
-- [OpenRouterAI.swift](../Framewise/OpenRouterAI.swift) — opt-in OpenRouter request, normalized top-left box parsing, validation, and conversion into Vision/Core Graphics bottom-left coordinates.
+- [OpenRouterAI.swift](../Framewise/OpenRouterAI.swift) — opt-in OpenRouter/Groq/Gemini requests, normalized top-left box parsing, per-provider key validation, and conversion into Vision/Core Graphics bottom-left coordinates.
 - [CameraView.swift](../Framewise/CameraView.swift) — subject overlay, movement/readiness UI, camera controls, shutter action, and aspect-fill tap-coordinate conversion.
 - [README.md](../README.md) — product-level privacy and feature summary.
 
@@ -160,7 +160,7 @@ Important differences from the Framed reference:
 
 | Behavior | Framed reference | Current Framewise project |
 |---|---|---|
-| Analysis | Remote vision proxy observed in bundle | On-device Core ML/Vision by default; optional user-configured OpenRouter with local fallback |
+| Analysis | Remote vision proxy observed in bundle | On-device Core ML/Vision by default; optional user-configured OpenRouter, Groq, or Gemini with local fallback |
 | Model output | Normalized subject point plus ideal zoom | Normalized subject box, label, confidence, and framing tip; its center supplies the guide point and its dimensions inform zoom/reticle size |
 | Motion | Gyroscope integration at requested 32 ms interval | Core Motion device-motion samples at 32 ms; gyro Y updates top-left point X and gyro X updates point Y, scaled by zoom relative to scan |
 | Lock | Point within 0.06 radial radius for >600 ms; latch and snap to center | Same radial 0.06 test and >600 ms dwell; latch, snap to center, delay zoom 100 ms, and enter ready at about 900 ms |

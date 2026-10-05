@@ -32,7 +32,7 @@ feed = json.loads(path.read_text())
 app = feed["apps"][0]
 feed["sourceURL"] = "https://github.com/hesm4tt/framewise-ipa/releases/latest/download/framewise.json"
 app["bundleIdentifier"] = "com.framewise.camera"
-app["localizedDescription"] = "Fixed frame target with Framed-style gyroscope-guided subject reticle and centered dwell lock, local or optional OpenRouter vision scans, tap-to-retarget, suggested zoom, high-resolution capture, and optional RAW."
+app["localizedDescription"] = "Fixed frame target with Framed-style gyroscope-guided subject reticle and centered dwell lock, local or optional OpenRouter, Groq, or Gemini vision scans, tap-to-retarget, suggested zoom, high-resolution capture, and optional RAW."
 app["permissions"] = [p for p in app.get("permissions", []) if p.get("type") != "photos"]
 versions = app.setdefault("versions", [])
 versions[:] = [entry for entry in versions if entry.get("version") != version]
@@ -42,7 +42,7 @@ versions.insert(0, {
     "downloadURL": f"https://github.com/hesm4tt/framewise-ipa/releases/download/v{version}/Framewise.ipa",
     "size": size,
     "minOSVersion": "15.0",
-    "localizedDescription": "Uses Framed-style point tracking from 32 ms gyroscope samples, direction bands, a 600 ms centered dwell, a latched reticle, and delayed optical zoom. Includes optional OpenRouter vision scans with local fallback."
+    "localizedDescription": "Uses Framed-style point tracking from 32 ms gyroscope samples, direction bands, a 600 ms centered dwell, a latched reticle, and delayed optical zoom. Includes optional OpenRouter, Groq, or Gemini vision scans with local fallback."
 })
 path.write_text(json.dumps(feed, indent=2, ensure_ascii=False) + "\n")
 PY
@@ -53,7 +53,7 @@ else
   gh release create "$TAG" "$IPA" "$FEED" \
     --repo "$REPOSITORY" \
     --title "Framewise $VERSION" \
-    --notes "Replaces attitude/FOV projection with Framed-style point tracking from Core Motion gyroscope samples at about 32 ms. Direction prompts use 0.4/0.6 bands; lock requires a 0.06-radius center dwell longer than 600 ms, snaps the reticle to center, starts the ideal zoom after 100 ms, and enters ready about 900 ms after lock. The dashed frame target remains fixed while the subject reticle moves over the live image. OpenRouter vision scans remain opt-in and local fallback handles provider limits. Build $BUILD."
+    --notes "Replaces attitude/FOV projection with Framed-style point tracking from Core Motion gyroscope samples at about 32 ms. Direction prompts use 0.4/0.6 bands; lock requires a 0.06-radius center dwell longer than 600 ms, snaps the reticle to center, starts the ideal zoom after 100 ms, and enters ready about 900 ms after lock. The dashed frame target remains fixed while the subject reticle moves over the live image. OpenRouter, Groq, and Gemini scans are opt-in; local fallback handles provider limits. Build $BUILD."
 fi
 
 publish_repository_file() {

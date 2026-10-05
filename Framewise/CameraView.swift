@@ -205,7 +205,7 @@ struct CameraView: View {
                 Button {
                     showAIScanSettings = true
                 } label: {
-                    Label("OpenRouter AI scan settings", systemImage: "sparkles")
+                    Label("Cloud AI scan settings", systemImage: "sparkles")
                 }
                 Button {
                     showGrid.toggle()
@@ -257,7 +257,7 @@ struct CameraView: View {
             }
             .accessibilityLabel("Camera options")
             .sheet(isPresented: $showAIScanSettings) {
-                OpenRouterSettingsView()
+                AIScanSettingsView()
             }
         }
         .foregroundStyle(.white)

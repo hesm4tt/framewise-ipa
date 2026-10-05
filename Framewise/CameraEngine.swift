@@ -283,8 +283,8 @@ final class CameraEngine: NSObject, ObservableObject {
 
         isScanning = true
         isScanPending = true
-        let openRouterAPIKey = OpenRouterPreferences.enabledAPIKey()
-        scanAnalysisLabel = openRouterAPIKey == nil ? "ANALYZED ON THIS IPHONE" : "SENT TO OPENROUTER"
+        let cloudProvider = ScanAISettings.enabledCloudProvider()
+        scanAnalysisLabel = cloudProvider.map { "SENT TO \($0.provider.displayName.uppercased())" } ?? "ANALYZED ON THIS IPHONE"
         scanHasProducedResult = false
         isFramingReady = false
         subjectBox = nil
@@ -305,14 +305,13 @@ final class CameraEngine: NSObject, ObservableObject {
         zoomAnimationID = UUID()
         didApplyIdealZoom = false
         userAdjustedZoomForScan = false
-        guidance = openRouterAPIKey == nil
-            ? "Capturing one frame for on-device analysis…"
-            : "Capturing one frame for OpenRouter AI…"
+        guidance = cloudProvider.map { "Capturing one frame for \($0.provider.displayName)…" }
+            ?? "Capturing one frame for on-device analysis…"
         movementInstruction = "Hold still"
         movementSymbol = "camera.metering.center.weighted"
         activeScanID = UUID()
         let scanID = activeScanID
-        AppDiagnostics.shared.log("scan", "One-shot scan requested · mode=\(openRouterAPIKey == nil ? "on-device" : "openrouter") · selectionPoint=\(selectionPoint.map(Self.pointDescription) ?? "automatic") · cameraZoom=\(currentZoom)x")
+        AppDiagnostics.shared.log("scan", "One-shot scan requested · mode=\(cloudProvider.map { "cloud:\($0.provider.rawValue)" } ?? "on-device") · selectionPoint=\(selectionPoint.map(Self.pointDescription) ?? "automatic") · cameraZoom=\(currentZoom)x")
 
         sessionQueue.async { [weak self] in
             guard let self else { return }
@@ -354,7 +353,7 @@ final class CameraEngine: NSObject, ObservableObject {
                         self.subjectAnalyzer.analyzeScanPhoto(
                             data,
                             selectionPoint: selectionPoint,
-                            openRouterAPIKey: openRouterAPIKey
+                            cloudProvider: cloudProvider
                         ) { result in
                             Task { @MainActor in
                                 guard self.activeScanID == scanID, self.isScanning else { return }
@@ -395,7 +394,7 @@ final class CameraEngine: NSObject, ObservableObject {
         didLatchCenteredSubject = false
         didFinishCenteringTransition = false
         subjectBox = result.box
-        let diagnosticSubject = result.source.hasPrefix("openrouter:") ? "redacted" : (result.label ?? "none")
+        let diagnosticSubject = result.source.hasPrefix("cloud:") ? "redacted" : (result.label ?? "none")
         AppDiagnostics.shared.log(
             "scan",
             "Scan completed · source=\(result.source) · subject=\(diagnosticSubject) · confidence=\(String(format: "%.2f", result.confidence)) · candidates=\(result.candidateCount) · jpegBytes=\(result.scanJPEGBytes) · point=\(result.box.map { Self.pointDescription(CGPoint(x: $0.midX, y: 1 - $0.midY)) } ?? "none") · box=\(result.box.map(Self.boxDescription) ?? "none") · frameRatio=\(result.frameAspectRatio)"
@@ -1145,7 +1144,7 @@ private final class SubjectAnalyzer: NSObject {
     func analyzeScanPhoto(
         _ photoData: Data,
         selectionPoint: CGPoint?,
-        openRouterAPIKey: String?,
+        cloudProvider: (provider: ScanAIProvider, apiKey: String)?,
         completion: @escaping (SceneAnalysisResult) -> Void
     ) {
         guard let (scanJPEG, scanImage) = Self.makeCompactScanImage(from: photoData) else {
@@ -1161,15 +1160,20 @@ private final class SubjectAnalyzer: NSObject {
         }
 
         let aspectRatio = CGFloat(scanImage.width) / CGFloat(max(1, scanImage.height))
-        if let openRouterAPIKey {
-            OpenRouterScanner.scan(jpegData: scanJPEG, selectionPoint: selectionPoint, apiKey: openRouterAPIKey) { result in
+        if let cloudProvider {
+            CloudVisionScanner.scan(
+                jpegData: scanJPEG,
+                selectionPoint: selectionPoint,
+                provider: cloudProvider.provider,
+                apiKey: cloudProvider.apiKey
+            ) { result in
                 switch result {
                 case let .success(remoteResult):
                     completion(SceneAnalysisResult(
                         box: remoteResult.box,
                         label: remoteResult.label,
                         isManuallySelected: selectionPoint != nil,
-                        source: "openrouter:\(OpenRouterScanner.modelID)",
+                        source: "cloud:\(cloudProvider.provider.rawValue):\(cloudProvider.provider.modelID)",
                         errorDescription: nil,
                         frameAspectRatio: aspectRatio,
                         confidence: remoteResult.confidence,
@@ -1178,7 +1182,7 @@ private final class SubjectAnalyzer: NSObject {
                         framingTip: remoteResult.framingTip
                     ))
                 case let .failure(error):
-                    AppDiagnostics.shared.log("openrouter", "Using local scan fallback · code=\(error.diagnosticCode)")
+                    AppDiagnostics.shared.log(cloudProvider.provider.diagnosticArea, "Using local scan fallback · code=\(error.diagnosticCode)")
                     self.analyzeLocally(
                         scanJPEG: scanJPEG,
                         scanImage: scanImage,
@@ -1264,7 +1268,7 @@ private final class SubjectAnalyzer: NSObject {
         }
         let errorDescription: String?
         if selected == nil && remoteFallbackCode != nil {
-            errorDescription = "OpenRouter was unavailable and the local scan found no subject. Tap a subject to frame it manually or scan again."
+            errorDescription = "Cloud AI was unavailable and the local scan found no subject. Tap a subject to frame it manually or scan again."
         } else if selected == nil && requestError != nil {
             errorDescription = "On-device subject scan failed. Tap a subject to frame it manually or scan again."
         } else {

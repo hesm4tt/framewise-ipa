@@ -23,6 +23,14 @@
       ],
       "versions": [
         {
+          "version": "1.9",
+          "date": "2026-10-04",
+          "downloadURL": "https://github.com/hesm4tt/framewise-ipa/releases/download/v1.9/Framewise.ipa",
+          "size": 8680742,
+          "minOSVersion": "15.0",
+          "localizedDescription": "Uses Framed-style point tracking from 32 ms gyroscope samples, direction bands, a 600 ms centered dwell, a latched reticle, and delayed optical zoom. Includes optional OpenRouter, Groq, or Gemini vision scans with local fallback."
+        },
+        {
           "version": "1.8",
           "date": "2026-10-04",
           "downloadURL": "https://github.com/hesm4tt/framewise-ipa/releases/download/v1.8/Framewise.ipa",

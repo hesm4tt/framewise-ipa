@@ -7,7 +7,7 @@
       "name": "Framewise",
       "bundleIdentifier": "com.framewise.camera",
       "developerName": "Framewise",
-      "localizedDescription": "One-shot local subject detection or optional OpenRouter free vision scans, motion-anchored framing, tap-to-retarget, suggested zoom, high-resolution capture, and optional RAW.",
+      "localizedDescription": "Fixed frame target with a motion-anchored subject marker, local or optional OpenRouter vision scans, tap-to-retarget, suggested zoom, high-resolution capture, and optional RAW.",
       "iconURL": "https://raw.githubusercontent.com/hesm4tt/framewise-ipa/main/framewise-icon.png",
       "subtitle": "Compose the shot you have in mind",
       "tintColor": "#17181C",
@@ -22,6 +22,14 @@
         }
       ],
       "versions": [
+        {
+          "version": "1.7",
+          "date": "2026-10-04",
+          "downloadURL": "https://github.com/hesm4tt/framewise-ipa/releases/download/v1.7/Framewise.ipa",
+          "size": 8661432,
+          "minOSVersion": "15.0",
+          "localizedDescription": "Keeps the frame target fixed while the subject marker follows the scene, with clearer move cues. Includes optional OpenRouter free vision scans with your own key and local fallback."
+        },
         {
           "version": "1.6",
           "date": "2026-10-04",

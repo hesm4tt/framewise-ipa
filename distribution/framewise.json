@@ -7,7 +7,7 @@
       "name": "Framewise",
       "bundleIdentifier": "com.framewise.camera",
       "developerName": "Framewise",
-      "localizedDescription": "Fixed frame target with a motion-anchored subject marker, local or optional OpenRouter vision scans, tap-to-retarget, suggested zoom, high-resolution capture, and optional RAW.",
+      "localizedDescription": "Fixed frame target with Framed-style gyroscope-guided subject reticle and centered dwell lock, local or optional OpenRouter vision scans, tap-to-retarget, suggested zoom, high-resolution capture, and optional RAW.",
       "iconURL": "https://raw.githubusercontent.com/hesm4tt/framewise-ipa/main/framewise-icon.png",
       "subtitle": "Compose the shot you have in mind",
       "tintColor": "#17181C",
@@ -22,6 +22,14 @@
         }
       ],
       "versions": [
+        {
+          "version": "1.8",
+          "date": "2026-10-04",
+          "downloadURL": "https://github.com/hesm4tt/framewise-ipa/releases/download/v1.8/Framewise.ipa",
+          "size": 8667102,
+          "minOSVersion": "15.0",
+          "localizedDescription": "Uses Framed-style point tracking from 32 ms gyroscope samples, direction bands, a 600 ms centered dwell, a latched reticle, and delayed optical zoom. Includes optional OpenRouter vision scans with local fallback."
+        },
         {
           "version": "1.7",
           "date": "2026-10-04",

@@ -62,11 +62,11 @@ final class CameraEngine: NSObject, ObservableObject {
     private var scanAnchorBox: CGRect?
     private var scanStartZoom: CGFloat = 1
     private var pendingScanZoom: CGFloat = 1
-    private var scanReferenceAngles: (yaw: Double, pitch: Double, roll: Double)?
-    private var pendingScanReferenceAngles: (yaw: Double, pitch: Double, roll: Double)?
-    private var latestMotionAngles: (yaw: Double, pitch: Double, roll: Double)?
-    private var portraitHorizontalFieldOfView: CGFloat = .pi / 4
-    private var portraitVerticalFieldOfView: CGFloat = .pi / 3
+    private var trackedSubjectPoint: CGPoint?
+    private var lastGyroscopeTimestamp: TimeInterval?
+    private var centeredDwellStartTimestamp: TimeInterval?
+    private var didLatchCenteredSubject = false
+    private var didFinishCenteringTransition = false
     private var hasInitializedCameraZoom = false
     private var didApplyIdealZoom = false
     private var userAdjustedZoomForScan = false
@@ -129,8 +129,15 @@ final class CameraEngine: NSObject, ObservableObject {
     }
 
     func startMotion() {
-        guard motionManager.isDeviceMotionAvailable, !motionManager.isDeviceMotionActive else { return }
-        motionManager.deviceMotionUpdateInterval = 0.15
+        guard motionManager.isDeviceMotionAvailable else {
+            AppDiagnostics.shared.log("motion", "Device motion unavailable · framing guide remains static and cannot auto-lock")
+            return
+        }
+        guard !motionManager.isDeviceMotionActive else { return }
+        // Framed's guide integrates gyro samples at about 32 ms. Device motion
+        // also supplies gravity for the horizon indicator, so one stream feeds
+        // both features without running two competing motion sessions.
+        motionManager.deviceMotionUpdateInterval = 0.032
         let frames = CMMotionManager.availableAttitudeReferenceFrames()
         let referenceFrame: CMAttitudeReferenceFrame = frames.contains(.xArbitraryCorrectedZVertical)
             ? .xArbitraryCorrectedZVertical
@@ -138,11 +145,8 @@ final class CameraEngine: NSObject, ObservableObject {
         motionManager.startDeviceMotionUpdates(using: referenceFrame, to: .main) { [weak self] motion, _ in
             guard let motion else { return }
             let horizonAngle = Self.horizonAngle(from: motion.gravity)
-            let angles = (
-                yaw: motion.attitude.yaw,
-                pitch: motion.attitude.pitch,
-                roll: motion.attitude.roll
-            )
+            let timestamp = motion.timestamp
+            let rotationRate = motion.rotationRate
             let now = ProcessInfo.processInfo.systemUptime
             if let self, now - self.lastMotionLogTime >= 5 {
                 self.lastMotionLogTime = now
@@ -154,9 +158,12 @@ final class CameraEngine: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.levelAngle = horizonAngle
-                self.latestMotionAngles = angles
                 if self.isScanning, let anchor = self.scanAnchorBox {
-                    self.updateMotionAnchoredTarget(anchor: anchor, currentAngles: angles)
+                    self.updateGyroscopeAnchoredTarget(
+                        anchor: anchor,
+                        rotationRate: rotationRate,
+                        timestamp: timestamp
+                    )
                 }
             }
         }
@@ -164,6 +171,7 @@ final class CameraEngine: NSObject, ObservableObject {
 
     func stopMotion() {
         if motionManager.isDeviceMotionActive { motionManager.stopDeviceMotionUpdates() }
+        lastGyroscopeTimestamp = nil
     }
 
     func toggleScanning() {
@@ -185,8 +193,11 @@ final class CameraEngine: NSObject, ObservableObject {
         zoomAnimationID = UUID()
         subjectBox = nil
         scanAnchorBox = nil
-        scanReferenceAngles = nil
-        pendingScanReferenceAngles = nil
+        trackedSubjectPoint = nil
+        lastGyroscopeTimestamp = nil
+        centeredDwellStartTimestamp = nil
+        didLatchCenteredSubject = false
+        didFinishCenteringTransition = false
         subjectLabel = "Subject"
         isSubjectLocked = false
         suggestedZoom = nil
@@ -215,6 +226,14 @@ final class CameraEngine: NSObject, ObservableObject {
             didApplyIdealZoom = true
             isZoomingToIdeal = false
             zoomAnimationID = UUID()
+            if didLatchCenteredSubject {
+                didLatchCenteredSubject = false
+                didFinishCenteringTransition = false
+                isSubjectLocked = false
+                centeredDwellStartTimestamp = nil
+                setFramingReady(false)
+                guidance = "Recenter the subject after changing zoom"
+            }
         }
         applyZoom(requested, rate: 5)
     }
@@ -270,12 +289,15 @@ final class CameraEngine: NSObject, ObservableObject {
         isFramingReady = false
         subjectBox = nil
         scanAnchorBox = nil
-        scanReferenceAngles = nil
-        pendingScanReferenceAngles = latestMotionAngles
+        trackedSubjectPoint = nil
+        lastGyroscopeTimestamp = nil
+        centeredDwellStartTimestamp = nil
+        didLatchCenteredSubject = false
+        didFinishCenteringTransition = false
         pendingScanZoom = currentZoom
         subjectLabel = "Subject"
         subjectFramingTip = nil
-        isSubjectLocked = selectionPoint != nil
+        isSubjectLocked = false
         suggestedZoom = nil
         idealZoom = nil
         zoomSuggestion = ""
@@ -364,10 +386,14 @@ final class CameraEngine: NSObject, ObservableObject {
         previewFrameAspectRatio = result.frameAspectRatio
         subjectLabel = result.label ?? "Subject"
         subjectFramingTip = result.framingTip
-        isSubjectLocked = result.isManuallySelected
+        isSubjectLocked = false
         scanAnchorBox = result.box
         scanStartZoom = pendingScanZoom
-        scanReferenceAngles = pendingScanReferenceAngles ?? latestMotionAngles
+        trackedSubjectPoint = result.box.map { CGPoint(x: $0.midX, y: 1 - $0.midY) }
+        lastGyroscopeTimestamp = nil
+        centeredDwellStartTimestamp = nil
+        didLatchCenteredSubject = false
+        didFinishCenteringTransition = false
         subjectBox = result.box
         let diagnosticSubject = result.source.hasPrefix("openrouter:") ? "redacted" : (result.label ?? "none")
         AppDiagnostics.shared.log(
@@ -396,10 +422,12 @@ final class CameraEngine: NSObject, ObservableObject {
         didApplyIdealZoom = abs(zoomTarget - currentZoom) <= 0.18
         suggestedZoom = didApplyIdealZoom ? nil : zoomTarget
         zoomSuggestion = didApplyIdealZoom ? "" : "Ideal zoom"
-        updateMotionAnchoredTarget(anchor: box, currentAngles: latestMotionAngles)
-        if scanReferenceAngles == nil {
-            guidance = "Scan complete. Move slowly to center the target."
-            AppDiagnostics.shared.log("motion", "No attitude baseline was available at scan completion; retaining static subject point")
+        updateTrackedSubjectBox(anchor: box)
+        if !motionManager.isDeviceMotionAvailable {
+            movementInstruction = "Aim manually"
+            movementSymbol = "hand.point.up.left"
+            guidance = "Motion guidance is unavailable. Center the subject in the fixed frame manually."
+            AppDiagnostics.shared.log("motion", "No device-motion samples available after scan · automatic centering disabled")
         }
     }
 
@@ -413,61 +441,124 @@ final class CameraEngine: NSObject, ObservableObject {
         setFramingReady(false)
     }
 
-    private func updateMotionAnchoredTarget(
+    private func updateGyroscopeAnchoredTarget(
         anchor: CGRect,
-        currentAngles: (yaw: Double, pitch: Double, roll: Double)?
+        rotationRate: CMRotationRate,
+        timestamp: TimeInterval
     ) {
-        let targetBox: CGRect
-        if let reference = scanReferenceAngles, let currentAngles {
-            let zoomRatio = max(currentZoom / max(scanStartZoom, 0.01), 0.1)
-            let horizontalHalfTangent = max(tan(Double(portraitHorizontalFieldOfView) / 2), 0.05)
-            let verticalHalfTangent = max(tan(Double(portraitVerticalFieldOfView) / 2), 0.05)
-            let yawDelta = Self.wrappedAngle(currentAngles.yaw - reference.yaw)
-            let pitchDelta = currentAngles.pitch - reference.pitch
-            let rollDelta = Self.wrappedAngle(currentAngles.roll - reference.roll)
-
-            let initialHorizontalAngle = atan(Double(anchor.midX - 0.5) * 2 * horizontalHalfTangent)
-            let initialVerticalAngle = atan(Double(anchor.midY - 0.5) * 2 * verticalHalfTangent)
-            var offsetX = zoomRatio * tan(initialHorizontalAngle + yawDelta) / (2 * horizontalHalfTangent)
-            var offsetY = zoomRatio * tan(initialVerticalAngle - pitchDelta) / (2 * verticalHalfTangent)
-            let cosRoll = cos(rollDelta)
-            let sinRoll = sin(rollDelta)
-            let rolledOffsetX = offsetX * cosRoll + offsetY * sinRoll
-            let rolledOffsetY = -offsetX * sinRoll + offsetY * cosRoll
-            offsetX = rolledOffsetX
-            offsetY = rolledOffsetY
-
-            let centerX = min(max(0.5 + offsetX, -0.35), 1.35)
-            let centerY = min(max(0.5 + offsetY, -0.35), 1.35)
-            let width = min(max(anchor.width * zoomRatio, 0.025), 1.35)
-            let height = min(max(anchor.height * zoomRatio, 0.025), 1.35)
-            targetBox = CGRect(x: centerX - width / 2, y: centerY - height / 2, width: width, height: height)
-        } else {
-            targetBox = anchor
+        guard var point = trackedSubjectPoint else { return }
+        if didLatchCenteredSubject {
+            updateTrackedSubjectBox(anchor: anchor)
+            updateAdvice(box: subjectBox, exposure: exposureBias, angle: levelAngle)
+            if didFinishCenteringTransition, !isZoomingToIdeal, let box = subjectBox {
+                setFramingReady(isGoodComposition(box, exposure: exposureBias, angle: levelAngle))
+            }
+            return
         }
 
-        subjectBox = targetBox
-        updateAdvice(box: targetBox, exposure: exposureBias, angle: levelAngle)
+        guard let previousTimestamp = lastGyroscopeTimestamp else {
+            lastGyroscopeTimestamp = timestamp
+            updateTrackedSubjectBox(anchor: anchor)
+            updateCenteringDwell(point: point, timestamp: timestamp)
+            return
+        }
+        lastGyroscopeTimestamp = timestamp
+        let elapsed = timestamp - previousTimestamp
+        guard elapsed > 0, elapsed <= 0.2 else {
+            centeredDwellStartTimestamp = nil
+            AppDiagnostics.shared.log("motion", "Ignored gyro sample outside valid interval · dt=\(String(format: "%.3f", elapsed))s")
+            return
+        }
+
+        let zoomFactor = max(1, currentZoom / max(scanStartZoom, 0.01))
+        // Framed's recovered portrait tracker integrates Y rotation into X and
+        // X rotation into top-left-origin Y, with separate visual scaling.
+        point.x += CGFloat(rotationRate.y * elapsed * Double(zoomFactor) / 1.2)
+        point.y += CGFloat(rotationRate.x * elapsed * Double(zoomFactor) / 1.6)
+        point.x = min(max(point.x, -0.35), 1.35)
+        point.y = min(max(point.y, -0.35), 1.35)
+        trackedSubjectPoint = point
+        updateTrackedSubjectBox(anchor: anchor)
+        updateAdvice(box: subjectBox, exposure: exposureBias, angle: levelAngle)
+        updateCenteringDwell(point: point, timestamp: timestamp)
+
         let now = ProcessInfo.processInfo.systemUptime
         if now - lastTargetLogTime >= 5 {
             lastTargetLogTime = now
-            let point = CGPoint(x: targetBox.midX, y: 1 - targetBox.midY)
-            let delta = scanReferenceAngles.flatMap { reference in
-                currentAngles.map { "yaw=\(String(format: "%.3f", Self.wrappedAngle($0.yaw - reference.yaw))) pitch=\(String(format: "%.3f", $0.pitch - reference.pitch))" }
-            } ?? "attitude=unavailable"
             AppDiagnostics.shared.log(
                 "guidance",
-                "Motion-anchored target · \(Self.pointDescription(point)) · \(delta) · idealZoom=\(idealZoom.map(Self.zoomDescription) ?? "none") · currentZoom=\(currentZoom)x"
+                "Gyro-anchored reticle · \(Self.pointDescription(point)) · rateX=\(String(format: "%.3f", rotationRate.x)) rateY=\(String(format: "%.3f", rotationRate.y)) dt=\(String(format: "%.3f", elapsed))s · zoomFactor=\(String(format: "%.2f", Double(zoomFactor))) · idealZoom=\(idealZoom.map(Self.zoomDescription) ?? "none")"
             )
         }
-        let targetCentered = abs(targetBox.midX - 0.5) <= 0.06 && abs(targetBox.midY - 0.5) <= 0.06
-        if targetCentered, !didApplyIdealZoom, !userAdjustedZoomForScan, let idealZoom,
-           abs(idealZoom - currentZoom) > 0.18 {
-            startIdealZoom(to: idealZoom)
+    }
+
+    private func updateTrackedSubjectBox(anchor: CGRect) {
+        guard let point = trackedSubjectPoint else { return }
+        let zoomRatio = max(currentZoom / max(scanStartZoom, 0.01), 0.1)
+        let width = min(max(anchor.width * zoomRatio, 0.025), 1.35)
+        let height = min(max(anchor.height * zoomRatio, 0.025), 1.35)
+        subjectBox = CGRect(
+            x: point.x - width / 2,
+            y: 1 - point.y - height / 2,
+            width: width,
+            height: height
+        )
+    }
+
+    private func updateCenteringDwell(point: CGPoint, timestamp: TimeInterval) {
+        guard !didLatchCenteredSubject else { return }
+        let distanceFromCenter = hypot(point.x - 0.5, point.y - 0.5)
+        guard distanceFromCenter < 0.06 else {
+            if centeredDwellStartTimestamp != nil {
+                AppDiagnostics.shared.log("guidance", "Centering dwell reset · distance=\(String(format: "%.3f", distanceFromCenter))")
+            }
+            centeredDwellStartTimestamp = nil
+            return
         }
 
-        let zoomIsSettled = didApplyIdealZoom || idealZoom == nil || abs((idealZoom ?? currentZoom) - currentZoom) <= 0.18
-        setFramingReady(targetCentered && zoomIsSettled && !isZoomingToIdeal && isGoodComposition(targetBox, exposure: exposureBias, angle: levelAngle))
+        guard let startedAt = centeredDwellStartTimestamp else {
+            centeredDwellStartTimestamp = timestamp
+            movementInstruction = "Hold steady"
+            movementSymbol = "scope"
+            guidance = "Subject centered · hold for a moment"
+            AppDiagnostics.shared.log("guidance", "Centering dwell started · radius=0.06")
+            return
+        }
+        if timestamp - startedAt > 0.6 {
+            latchCenteredSubject()
+        }
+    }
+
+    private func latchCenteredSubject() {
+        guard !didLatchCenteredSubject, let anchor = scanAnchorBox else { return }
+        didLatchCenteredSubject = true
+        didFinishCenteringTransition = false
+        centeredDwellStartTimestamp = nil
+        trackedSubjectPoint = CGPoint(x: 0.5, y: 0.5)
+        isSubjectLocked = true
+        setFramingReady(false)
+        updateTrackedSubjectBox(anchor: anchor)
+        movementInstruction = "Hold steady"
+        movementSymbol = "scope"
+        guidance = "Centered · framing your shot"
+        AppDiagnostics.shared.log("guidance", "Subject centered and latched after 600 ms dwell · reticle snapped to screen center")
+
+        if !userAdjustedZoomForScan, !didApplyIdealZoom, let idealZoom,
+           abs(idealZoom - currentZoom) > 0.18 {
+            startIdealZoom(to: idealZoom)
+        } else {
+            let animationID = UUID()
+            zoomAnimationID = animationID
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                guard let self, self.zoomAnimationID == animationID,
+                      self.didLatchCenteredSubject, let box = self.subjectBox else { return }
+                self.didFinishCenteringTransition = true
+                self.updateAdvice(box: box, exposure: self.exposureBias, angle: self.levelAngle)
+                self.setFramingReady(self.isGoodComposition(box, exposure: self.exposureBias, angle: self.levelAngle))
+                AppDiagnostics.shared.log("guidance", "Ready state entered 900 ms after centering lock")
+            }
+        }
     }
 
     private func startIdealZoom(to zoom: CGFloat) {
@@ -478,9 +569,25 @@ final class CameraEngine: NSObject, ObservableObject {
         movementInstruction = "Hold steady"
         movementSymbol = "scope"
         guidance = "Centered · moving to \(Self.zoomDescription(zoom)) zoom"
-        AppDiagnostics.shared.log("zoom", "Target centered · animating to local scan ideal zoom \(zoom)x")
-        applyZoom(zoom, rate: 4)
-        finishIdealZoomAnimation(after: 0.65)
+        let animationID = UUID()
+        zoomAnimationID = animationID
+        AppDiagnostics.shared.log("zoom", "Centered lock · starting ideal zoom after 100 ms · target=\(zoom)x")
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard let self, self.zoomAnimationID == animationID, self.didLatchCenteredSubject else { return }
+            self.applyZoom(zoom, rate: 4)
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard self.zoomAnimationID == animationID, self.didLatchCenteredSubject,
+                  let box = self.subjectBox else { return }
+            self.isZoomingToIdeal = false
+            self.updateTrackedSubjectBox(anchor: self.scanAnchorBox ?? box)
+            self.didFinishCenteringTransition = true
+            self.updateAdvice(box: self.subjectBox, exposure: self.exposureBias, angle: self.levelAngle)
+            if let finalBox = self.subjectBox {
+                self.setFramingReady(self.isGoodComposition(finalBox, exposure: self.exposureBias, angle: self.levelAngle))
+            }
+            AppDiagnostics.shared.log("zoom", "Ideal zoom finished · ready state entered 900 ms after centering lock")
+        }
     }
 
     private func finishIdealZoomAnimation(after duration: TimeInterval) {
@@ -492,8 +599,10 @@ final class CameraEngine: NSObject, ObservableObject {
             self.isZoomingToIdeal = false
             if let box = self.subjectBox {
                 self.updateAdvice(box: box, exposure: self.exposureBias, angle: self.levelAngle)
-                let centered = abs(box.midX - 0.5) <= 0.06 && abs(box.midY - 0.5) <= 0.06
-                self.setFramingReady(centered && self.isGoodComposition(box, exposure: self.exposureBias, angle: self.levelAngle))
+                self.updateTrackedSubjectBox(anchor: self.scanAnchorBox ?? box)
+                if let finalBox = self.subjectBox {
+                    self.setFramingReady(self.didLatchCenteredSubject && self.didFinishCenteringTransition && self.isGoodComposition(finalBox, exposure: self.exposureBias, angle: self.levelAngle))
+                }
             }
             AppDiagnostics.shared.log("zoom", "Ideal zoom animation finished")
         }
@@ -652,12 +761,6 @@ final class CameraEngine: NSObject, ObservableObject {
         } else {
             displayZoomMultiplier = 1
         }
-        let sensorDimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-        let landscapeAspect = Double(max(sensorDimensions.width, sensorDimensions.height)) /
-            Double(max(1, min(sensorDimensions.width, sensorDimensions.height)))
-        let landscapeHorizontalFOV = Double(device.activeFormat.videoFieldOfView) * .pi / 180
-        portraitHorizontalFieldOfView = CGFloat(2 * atan(tan(landscapeHorizontalFOV / 2) / max(landscapeAspect, 1)))
-        portraitVerticalFieldOfView = CGFloat(landscapeHorizontalFOV)
         let switchOvers = device.virtualDeviceSwitchOverVideoZoomFactors.map { String(describing: $0) }.joined(separator: ",")
         let constituents = device.constituentDevices.map(\.deviceType.rawValue).joined(separator: ",")
         AppDiagnostics.shared.log(
@@ -798,13 +901,6 @@ final class CameraEngine: NSObject, ObservableObject {
         String(format: "x=%.3f y=%.3f w=%.3f h=%.3f", box.minX, box.minY, box.width, box.height)
     }
 
-    private static func wrappedAngle(_ angle: Double) -> Double {
-        var value = angle
-        while value > .pi { value -= 2 * .pi }
-        while value < -.pi { value += 2 * .pi }
-        return value
-    }
-
     private func updateAdvice(box: CGRect?, exposure: Float, angle: Double) {
         if !didApplyIdealZoom, !userAdjustedZoomForScan, !isZoomingToIdeal,
            let idealZoom, abs(idealZoom - currentZoom) > 0.18 {
@@ -841,8 +937,8 @@ final class CameraEngine: NSObject, ObservableObject {
         let x = box.midX
         let yFromTop = 1 - box.midY
         var directions: [String] = []
-        if x < 0.43 { directions.append("left") }
-        if x > 0.57 { directions.append("right") }
+        if x < 0.40 { directions.append("left") }
+        if x > 0.60 { directions.append("right") }
         if yFromTop < 0.40 { directions.append("up") }
         if yFromTop > 0.60 { directions.append("down") }
         if directions.isEmpty {

@@ -49,7 +49,7 @@ struct CameraView: View {
                         subjectLabel: camera.subjectLabel,
                         imageAspectRatio: camera.previewFrameAspectRatio,
                         size: geometry.size,
-                        isReady: camera.isFramingReady
+                        isLocked: camera.isSubjectLocked
                     )
                 }
                 .ignoresSafeArea()
@@ -69,7 +69,7 @@ struct CameraView: View {
                     .foregroundStyle(.black)
                     .padding(.horizontal, 16)
                     .frame(height: 38)
-                    .background(camera.isFramingReady ? Color.green : FramewiseStyle.accent, in: Capsule())
+                    .background(camera.isSubjectLocked ? Color.green : FramewiseStyle.accent, in: Capsule())
                     .shadow(color: .black.opacity(0.3), radius: 12, y: 5)
                     Spacer()
                 }
@@ -113,6 +113,9 @@ struct CameraView: View {
         }
         .onChange(of: camera.isFramingReady) { isReady in
             if isReady { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+        }
+        .onChange(of: camera.isSubjectLocked) { isLocked in
+            if isLocked { UINotificationFeedbackGenerator().notificationOccurred(.success) }
         }
         .onDisappear { camera.stop() }
         .onChange(of: showGallery) { isPresented in
@@ -684,7 +687,7 @@ private struct SubjectMarker: View {
     let subjectLabel: String
     let imageAspectRatio: CGFloat
     let size: CGSize
-    let isReady: Bool
+    let isLocked: Bool
 
     var body: some View {
         let sourceAspect = max(imageAspectRatio, 0.01)
@@ -711,7 +714,7 @@ private struct SubjectMarker: View {
         )
         let labelX = min(max(rect.midX, 68), max(68, size.width - 68))
         let labelY = min(max(rect.maxY + 20, 62), max(62, size.height - 45))
-        let targetColor = isReady ? Color.green : FramewiseStyle.accent
+        let targetColor = isLocked ? Color.green : FramewiseStyle.accent
 
         ZStack {
             Path { path in
@@ -764,7 +767,7 @@ private struct SubjectMarker: View {
             .background(targetColor, in: Capsule())
             .position(x: labelX, y: labelY)
         }
-        .animation(.spring(response: 0.32, dampingFraction: 0.78), value: box)
-        .animation(.easeInOut(duration: 0.28), value: isReady)
+        .animation(.linear(duration: 0.032), value: box)
+        .animation(.easeInOut(duration: 0.28), value: isLocked)
     }
 }

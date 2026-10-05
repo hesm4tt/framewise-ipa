@@ -23,13 +23,14 @@ An on-device camera guide that helps you find your subject, refine the frame, an
 
 ## A little more intention in every frame
 
-Framewise gives you a live subject guide, clear move-the-phone cues, and an easy suggested zoom. Tap the subject you want and Framewise keeps its guide with that choice as you reframe.
+Framewise scans one temporary camera still, then guides you to re-aim, centers the chosen subject with motion sensors, and eases to an ideal zoom before the full-resolution shutter photo.
 
-- Live subject detection and tracking, with tap-to-select.
-- Simple movement guidance and one-tap suggested zoom.
+- One-shot subject detection on device. Tap a subject to rescan and retarget; analysis does not run on every preview frame.
+- A motion-anchored subject marker and clear move-the-phone cues. The camera eases to the scan’s ideal zoom when the target reaches center.
+- The scan image is orientation-corrected, reduced to 768 px, and JPEG-compressed locally. It is discarded after analysis and is never used as the final photo.
 - Zoom controls adapt to the iPhone’s physical lenses and sensor resolution, so each model gets its own optical and optical-quality stops.
 - Full-resolution processed capture, optional RAW + processed DNG capture, local film looks, and a private in-app gallery.
-- On-device Core ML and Apple Vision processing. No AI API key, account, or per-shot charge.
+- Bundled Core ML and Apple Vision processing. No AI API key, network request, account, or per-shot charge.
 
 ## Install with the method you already use
 
@@ -75,7 +76,7 @@ The `main` branch includes the complete Xcode project, Swift source, and bundled
 ./scripts/package-ipa.sh
 ```
 
-The camera requests the largest still dimensions the active iPhone camera reports. Zoom choices derive from the device’s physical lenses and sensor sizes; suggested zooms prefer an optical or optical-quality stop when that is a reasonable fit. RAW capture is optional because DNG files are larger and may omit some computational processing. Framewise keeps the original full-resolution processed image with the edited version, and saves a DNG sidecar when RAW is enabled. ProRAW is used where the current camera configuration supports it; otherwise, Framewise uses Bayer RAW.
+The scan flow uses one temporary still and a single local Vision inference. A motion-anchored target point guides physical re-aiming; when centered, Framewise animates the camera zoom. The shutter then captures the camera’s full-resolution output at its current zoom. There is no final-photo crop. Zoom choices derive from the device’s physical lenses and sensor sizes. RAW is optional because DNG files are larger and may omit some computational processing. Framewise keeps the original full-resolution processed image with the edited version, and saves a DNG sidecar when RAW is enabled. ProRAW is used where the current camera configuration supports it; otherwise, Framewise uses Bayer RAW.
 
 To publish a new IPA and refresh the SideStore feed, set the version/build in `Framewise.xcodeproj/project.pbxproj` and run `./scripts/publish-ipa.sh` with an authenticated GitHub CLI.
 

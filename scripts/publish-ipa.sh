@@ -83,11 +83,9 @@ publish_repository_file "$FEED" "distribution/framewise.json" "Sync Framewise so
 publish_repository_file "$DIST_README" "README.md" "Update Framewise install instructions"
 
 PUBLISHED_FEED="$ROOT/build/framewise-published-feed.json"
-curl --location --fail --silent --show-error \
-  --header 'Cache-Control: no-cache' \
-  --header 'Pragma: no-cache' \
-  "https://raw.githubusercontent.com/$REPOSITORY/main/framewise.json" \
-  --output "$PUBLISHED_FEED"
+gh api "repos/$REPOSITORY/contents/framewise.json?ref=main" --jq '.content' \
+  | python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.buffer.read()))' \
+  > "$PUBLISHED_FEED"
 python3 - "$PUBLISHED_FEED" "$VERSION" "$SIZE" <<'PY'
 import json
 import sys

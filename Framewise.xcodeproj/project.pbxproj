@@ -415,7 +415,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5</string>
+				<string>6</string>
 				<key>GENERATE_INFOPLIST_FILE</key>
 				<string>NO</string>
 				<key>INFOPLIST_FILE</key>
@@ -423,7 +423,7 @@
 				<key>IPHONEOS_DEPLOYMENT_TARGET</key>
 				<string>15.0</string>
 				<key>MARKETING_VERSION</key>
-				<string>1.4</string>
+				<string>1.5</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.framewise.camera</string>
 				<key>PRODUCT_NAME</key>
@@ -453,7 +453,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5</string>
+				<string>6</string>
 				<key>GENERATE_INFOPLIST_FILE</key>
 				<string>NO</string>
 				<key>INFOPLIST_FILE</key>
@@ -461,7 +461,7 @@
 				<key>IPHONEOS_DEPLOYMENT_TARGET</key>
 				<string>15.0</string>
 				<key>MARKETING_VERSION</key>
-				<string>1.4</string>
+				<string>1.5</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.framewise.camera</string>
 				<key>PRODUCT_NAME</key>

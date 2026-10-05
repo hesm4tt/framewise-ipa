@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreImage
 import CoreML
 import CoreMotion
 import ImageIO
@@ -18,10 +19,14 @@ final class CameraEngine: NSObject, ObservableObject {
     @Published private(set) var status: Status = .idle
     @Published private(set) var subjectBox: CGRect?
     @Published private(set) var subjectLabel = "Subject"
+    @Published private(set) var isSubjectLocked = false
+    @Published private(set) var isScanPending = false
+    @Published private(set) var isZoomingToIdeal = false
     @Published private(set) var guidance = "Tap ✦ to scan this scene"
     @Published private(set) var movementInstruction = "Point at a subject"
     @Published private(set) var movementSymbol = "viewfinder"
     @Published private(set) var suggestedZoom: CGFloat?
+    @Published private(set) var idealZoom: CGFloat?
     @Published private(set) var zoomSuggestion = ""
     @Published private(set) var isCapturing = false
     @Published private(set) var hasFlash = false
@@ -41,15 +46,28 @@ final class CameraEngine: NSObject, ObservableObject {
     private let analysisQueue = DispatchQueue(label: "framewise.camera.analysis", qos: .userInitiated)
     private let motionManager = CMMotionManager()
     private let photoOutput = AVCapturePhotoOutput()
-    private let videoOutput = AVCaptureVideoDataOutput()
     private let subjectAnalyzer = SubjectAnalyzer()
     private let photoCaptureStateLock = NSLock()
     private var cameraDevice: AVCaptureDevice?
     private var displayZoomMultiplier: CGFloat = 1
     private var rawCapturePixelFormatType: OSType?
     private var rawCaptureFormatName: String?
-    private var consecutiveGoodAnalyses = 0
     private var lastMotionLogTime: TimeInterval = 0
+    private var lastTargetLogTime: TimeInterval = 0
+    private var pendingScanCaptureDelegate: ScanPhotoCaptureDelegate?
+    private var activeScanID = UUID()
+    private var zoomAnimationID = UUID()
+    private var scanAnchorBox: CGRect?
+    private var scanStartZoom: CGFloat = 1
+    private var pendingScanZoom: CGFloat = 1
+    private var scanReferenceAngles: (yaw: Double, pitch: Double, roll: Double)?
+    private var pendingScanReferenceAngles: (yaw: Double, pitch: Double, roll: Double)?
+    private var latestMotionAngles: (yaw: Double, pitch: Double, roll: Double)?
+    private var portraitHorizontalFieldOfView: CGFloat = .pi / 4
+    private var portraitVerticalFieldOfView: CGFloat = .pi / 3
+    private var hasInitializedCameraZoom = false
+    private var didApplyIdealZoom = false
+    private var userAdjustedZoomForScan = false
     private var configured = false
     private var pendingPhotoCompletion: ((CameraCapture?) -> Void)?
     private var pendingPhotoError: Error?
@@ -97,6 +115,7 @@ final class CameraEngine: NSObject, ObservableObject {
 
     func stop() {
         stopMotion()
+        stopScanning()
         sessionQueue.async { [weak self] in
             guard let self else { return }
             if self.session.isRunning {
@@ -110,9 +129,18 @@ final class CameraEngine: NSObject, ObservableObject {
     func startMotion() {
         guard motionManager.isDeviceMotionAvailable, !motionManager.isDeviceMotionActive else { return }
         motionManager.deviceMotionUpdateInterval = 0.15
-        motionManager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
+        let frames = CMMotionManager.availableAttitudeReferenceFrames()
+        let referenceFrame: CMAttitudeReferenceFrame = frames.contains(.xArbitraryCorrectedZVertical)
+            ? .xArbitraryCorrectedZVertical
+            : .xArbitraryZVertical
+        motionManager.startDeviceMotionUpdates(using: referenceFrame, to: .main) { [weak self] motion, _ in
             guard let motion else { return }
             let horizonAngle = Self.horizonAngle(from: motion.gravity)
+            let angles = (
+                yaw: motion.attitude.yaw,
+                pitch: motion.attitude.pitch,
+                roll: motion.attitude.roll
+            )
             let now = ProcessInfo.processInfo.systemUptime
             if let self, now - self.lastMotionLogTime >= 5 {
                 self.lastMotionLogTime = now
@@ -124,8 +152,9 @@ final class CameraEngine: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.levelAngle = horizonAngle
-                if self.isScanning, let box = self.subjectBox {
-                    self.updateAdvice(box: box, exposure: self.exposureBias, angle: horizonAngle)
+                self.latestMotionAngles = angles
+                if self.isScanning, let anchor = self.scanAnchorBox {
+                    self.updateMotionAnchoredTarget(anchor: anchor, currentAngles: angles)
                 }
             }
         }
@@ -136,37 +165,71 @@ final class CameraEngine: NSObject, ObservableObject {
     }
 
     func toggleScanning() {
-        setScanning(!isScanning)
+        if isScanning {
+            stopScanning()
+        } else {
+            startScanning()
+        }
     }
 
     func startScanning() {
-        setScanning(true)
+        requestScan(at: nil)
     }
 
-    private func setScanning(_ enabled: Bool) {
-        guard isScanning != enabled else { return }
-        isScanning = enabled
-        subjectAnalyzer.isEnabled = enabled
+    func stopScanning() {
+        isScanning = false
+        isScanPending = false
+        activeScanID = UUID()
+        zoomAnimationID = UUID()
         subjectBox = nil
+        scanAnchorBox = nil
+        scanReferenceAngles = nil
+        pendingScanReferenceAngles = nil
         subjectLabel = "Subject"
+        isSubjectLocked = false
         suggestedZoom = nil
+        idealZoom = nil
         zoomSuggestion = ""
         scanHasProducedResult = false
         isFramingReady = false
-        consecutiveGoodAnalyses = 0
-        guidance = enabled ? "Finding your subject…" : "Tap Start Guide for live framing tips"
-        movementInstruction = enabled ? "Point at a subject" : "Guide paused"
-        movementSymbol = enabled ? "viewfinder" : "pause.fill"
-        AppDiagnostics.shared.log("scan", enabled ? "Scene scan enabled" : "Scene scan disabled")
+        isZoomingToIdeal = false
+        didApplyIdealZoom = false
+        userAdjustedZoomForScan = false
+        guidance = "Tap Scan Scene to get a framing guide"
+        movementInstruction = "Ready to scan"
+        movementSymbol = "sparkles"
+        AppDiagnostics.shared.log("scan", "Framing guide stopped")
     }
 
     func selectSubject(at point: CGPoint) {
         guard isScanning else { return }
-        subjectAnalyzer.selectSubject(at: point)
-        AppDiagnostics.shared.log("guidance", String(format: "Manual subject selection requested · x=%.3f y=%.3f", point.x, point.y))
+        requestScan(at: point)
+        AppDiagnostics.shared.log("guidance", String(format: "One-shot rescan requested at tapped point · x=%.3f y=%.3f", point.x, point.y))
     }
 
     func setZoom(_ requested: CGFloat) {
+        if isScanning {
+            userAdjustedZoomForScan = true
+            didApplyIdealZoom = true
+            isZoomingToIdeal = false
+            zoomAnimationID = UUID()
+        }
+        applyZoom(requested, rate: 5)
+    }
+
+    func applySuggestedZoom() {
+        guard let suggestedZoom else { return }
+        didApplyIdealZoom = true
+        userAdjustedZoomForScan = true
+        isZoomingToIdeal = true
+        self.suggestedZoom = nil
+        zoomSuggestion = ""
+        guidance = "Moving to ideal \(Self.zoomDescription(suggestedZoom)) zoom"
+        applyZoom(suggestedZoom, rate: 4)
+        finishIdealZoomAnimation(after: 0.6)
+    }
+
+    private func applyZoom(_ requested: CGFloat, rate: Float) {
         sessionQueue.async { [weak self] in
             guard let self, let device = self.cameraDevice else { return }
             do {
@@ -180,13 +243,246 @@ final class CameraEngine: NSObject, ObservableObject {
                     return
                 }
                 let zoom = min(max(nativeZoom, device.minAvailableVideoZoomFactor), device.maxAvailableVideoZoomFactor)
-                device.ramp(toVideoZoomFactor: zoom, withRate: 5)
+                device.ramp(toVideoZoomFactor: zoom, withRate: rate)
                 device.unlockForConfiguration()
                 AppDiagnostics.shared.log("zoom", "Requested display stop \(requested)x · native factor \(zoom)x · multiplier \(multiplier)")
                 Task { @MainActor in self.currentZoom = zoom * multiplier }
             } catch {
                 AppDiagnostics.shared.log("zoom", "Could not set zoom · \(error.localizedDescription)")
             }
+        }
+    }
+
+    private func requestScan(at selectionPoint: CGPoint?) {
+        guard status == .ready else {
+            guidance = "Camera is starting…"
+            return
+        }
+        guard !isScanPending else { return }
+
+        isScanning = true
+        isScanPending = true
+        scanHasProducedResult = false
+        isFramingReady = false
+        subjectBox = nil
+        scanAnchorBox = nil
+        scanReferenceAngles = nil
+        pendingScanReferenceAngles = latestMotionAngles
+        pendingScanZoom = currentZoom
+        subjectLabel = "Subject"
+        isSubjectLocked = selectionPoint != nil
+        suggestedZoom = nil
+        idealZoom = nil
+        zoomSuggestion = ""
+        isZoomingToIdeal = false
+        zoomAnimationID = UUID()
+        didApplyIdealZoom = false
+        userAdjustedZoomForScan = false
+        guidance = "Capturing one frame for on-device analysis…"
+        movementInstruction = "Hold still"
+        movementSymbol = "camera.metering.center.weighted"
+        activeScanID = UUID()
+        let scanID = activeScanID
+        AppDiagnostics.shared.log("scan", "One-shot on-device scan requested · selectionPoint=\(selectionPoint.map(Self.pointDescription) ?? "automatic") · cameraZoom=\(currentZoom)x")
+
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.session.isRunning else {
+                Task { @MainActor in
+                    guard self.activeScanID == scanID else { return }
+                    self.finishScanFailure("Camera is not running. Wait a moment and scan again.", scanID: scanID)
+                }
+                return
+            }
+
+            let jpegCodec = self.photoOutput.availablePhotoCodecTypes.first(where: { $0 == .jpeg })
+            let settings: AVCapturePhotoSettings
+            if let jpegCodec {
+                settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: jpegCodec])
+            } else {
+                settings = AVCapturePhotoSettings()
+            }
+            settings.flashMode = .off
+            settings.photoQualityPrioritization = .speed
+            var scanDimensionsLabel = "standard photo dimensions"
+            if #available(iOS 17.0, *) {
+                if let smallest = self.cameraDevice?.activeFormat.supportedMaxPhotoDimensions.min(by: {
+                    Int64($0.width) * Int64($0.height) < Int64($1.width) * Int64($1.height)
+                }) {
+                    settings.maxPhotoDimensions = smallest
+                    scanDimensionsLabel = "\(smallest.width)x\(smallest.height)"
+                }
+            } else {
+                settings.isHighResolutionPhotoEnabled = false
+            }
+
+            let delegate = ScanPhotoCaptureDelegate { [weak self] result in
+                guard let self else { return }
+                self.sessionQueue.async { self.pendingScanCaptureDelegate = nil }
+                switch result {
+                case let .success(data):
+                    self.analysisQueue.async {
+                        self.subjectAnalyzer.analyzeScanPhoto(data, selectionPoint: selectionPoint) { result in
+                            Task { @MainActor in
+                                guard self.activeScanID == scanID, self.isScanning else { return }
+                                self.finishScan(result, scanID: scanID)
+                            }
+                        }
+                    }
+                case let .failure(error):
+                    Task { @MainActor in
+                        guard self.activeScanID == scanID, self.isScanning else { return }
+                        self.finishScanFailure("Couldn’t capture the scan frame. Tap Scan Again.", scanID: scanID)
+                    }
+                    AppDiagnostics.shared.log("scan", "One-shot scan photo failed · \(error.localizedDescription)")
+                }
+            }
+            self.pendingScanCaptureDelegate = delegate
+            AppDiagnostics.shared.log(
+                "scan",
+                "Temporary scan photo submitted · codec=\(jpegCodec?.rawValue ?? "default") · quality=speed · outputDimensions=\(scanDimensionsLabel)"
+            )
+            self.photoOutput.capturePhoto(with: settings, delegate: delegate)
+        }
+    }
+
+    private func finishScan(_ result: SceneAnalysisResult, scanID: UUID) {
+        guard activeScanID == scanID else { return }
+        isScanPending = false
+        scanHasProducedResult = true
+        previewFrameAspectRatio = result.frameAspectRatio
+        subjectLabel = result.label ?? "Subject"
+        isSubjectLocked = result.isManuallySelected
+        scanAnchorBox = result.box
+        scanStartZoom = pendingScanZoom
+        scanReferenceAngles = pendingScanReferenceAngles ?? latestMotionAngles
+        subjectBox = result.box
+        AppDiagnostics.shared.log(
+            "scan",
+            "Local scan completed · source=\(result.source) · subject=\(result.label ?? "none") · confidence=\(String(format: "%.2f", result.confidence)) · candidates=\(result.candidateCount) · jpegBytes=\(result.scanJPEGBytes) · point=\(result.box.map { Self.pointDescription(CGPoint(x: $0.midX, y: 1 - $0.midY)) } ?? "none") · box=\(result.box.map(Self.boxDescription) ?? "none") · frameRatio=\(result.frameAspectRatio)"
+        )
+
+        guard result.errorDescription == nil, let box = result.box else {
+            idealZoom = nil
+            suggestedZoom = nil
+            zoomSuggestion = ""
+            guidance = result.errorDescription ?? "No clear subject found. Tap a subject or scan again."
+            movementInstruction = "Tap a subject to rescan"
+            movementSymbol = "hand.tap"
+            setFramingReady(false)
+            return
+        }
+
+        let targetWidth: CGFloat = 0.40
+        let continuousTarget = min(
+            max(scanStartZoom * targetWidth / max(box.width, 0.04), zoomChoices.first ?? scanStartZoom),
+            zoomChoices.last ?? scanStartZoom
+        )
+        let zoomTarget = roundedToOpticalStop(continuousTarget, zoomingIn: continuousTarget > scanStartZoom)
+        idealZoom = zoomTarget
+        didApplyIdealZoom = abs(zoomTarget - currentZoom) <= 0.18
+        suggestedZoom = didApplyIdealZoom ? nil : zoomTarget
+        zoomSuggestion = didApplyIdealZoom ? "" : "Ideal zoom"
+        updateMotionAnchoredTarget(anchor: box, currentAngles: latestMotionAngles)
+        if scanReferenceAngles == nil {
+            guidance = "Scan complete. Move slowly to center the target."
+            AppDiagnostics.shared.log("motion", "No attitude baseline was available at scan completion; retaining static subject point")
+        }
+    }
+
+    private func finishScanFailure(_ message: String, scanID: UUID) {
+        guard activeScanID == scanID else { return }
+        isScanPending = false
+        scanHasProducedResult = false
+        guidance = message
+        movementInstruction = "Scan again"
+        movementSymbol = "arrow.clockwise"
+        setFramingReady(false)
+    }
+
+    private func updateMotionAnchoredTarget(
+        anchor: CGRect,
+        currentAngles: (yaw: Double, pitch: Double, roll: Double)?
+    ) {
+        let targetBox: CGRect
+        if let reference = scanReferenceAngles, let currentAngles {
+            let zoomRatio = max(currentZoom / max(scanStartZoom, 0.01), 0.1)
+            let horizontalHalfTangent = max(tan(Double(portraitHorizontalFieldOfView) / 2), 0.05)
+            let verticalHalfTangent = max(tan(Double(portraitVerticalFieldOfView) / 2), 0.05)
+            let yawDelta = Self.wrappedAngle(currentAngles.yaw - reference.yaw)
+            let pitchDelta = currentAngles.pitch - reference.pitch
+            let rollDelta = Self.wrappedAngle(currentAngles.roll - reference.roll)
+
+            let initialHorizontalAngle = atan(Double(anchor.midX - 0.5) * 2 * horizontalHalfTangent)
+            let initialVerticalAngle = atan(Double(anchor.midY - 0.5) * 2 * verticalHalfTangent)
+            var offsetX = zoomRatio * tan(initialHorizontalAngle + yawDelta) / (2 * horizontalHalfTangent)
+            var offsetY = zoomRatio * tan(initialVerticalAngle - pitchDelta) / (2 * verticalHalfTangent)
+            let cosRoll = cos(rollDelta)
+            let sinRoll = sin(rollDelta)
+            let rolledOffsetX = offsetX * cosRoll + offsetY * sinRoll
+            let rolledOffsetY = -offsetX * sinRoll + offsetY * cosRoll
+            offsetX = rolledOffsetX
+            offsetY = rolledOffsetY
+
+            let centerX = min(max(0.5 + offsetX, -0.35), 1.35)
+            let centerY = min(max(0.5 + offsetY, -0.35), 1.35)
+            let width = min(max(anchor.width * zoomRatio, 0.025), 1.35)
+            let height = min(max(anchor.height * zoomRatio, 0.025), 1.35)
+            targetBox = CGRect(x: centerX - width / 2, y: centerY - height / 2, width: width, height: height)
+        } else {
+            targetBox = anchor
+        }
+
+        subjectBox = targetBox
+        updateAdvice(box: targetBox, exposure: exposureBias, angle: levelAngle)
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - lastTargetLogTime >= 5 {
+            lastTargetLogTime = now
+            let point = CGPoint(x: targetBox.midX, y: 1 - targetBox.midY)
+            let delta = scanReferenceAngles.flatMap { reference in
+                currentAngles.map { "yaw=\(String(format: "%.3f", Self.wrappedAngle($0.yaw - reference.yaw))) pitch=\(String(format: "%.3f", $0.pitch - reference.pitch))" }
+            } ?? "attitude=unavailable"
+            AppDiagnostics.shared.log(
+                "guidance",
+                "Motion-anchored target · \(Self.pointDescription(point)) · \(delta) · idealZoom=\(idealZoom.map(Self.zoomDescription) ?? "none") · currentZoom=\(currentZoom)x"
+            )
+        }
+        let targetCentered = abs(targetBox.midX - 0.5) <= 0.06 && abs(targetBox.midY - 0.5) <= 0.06
+        if targetCentered, !didApplyIdealZoom, !userAdjustedZoomForScan, let idealZoom,
+           abs(idealZoom - currentZoom) > 0.18 {
+            startIdealZoom(to: idealZoom)
+        }
+
+        let zoomIsSettled = didApplyIdealZoom || idealZoom == nil || abs((idealZoom ?? currentZoom) - currentZoom) <= 0.18
+        setFramingReady(targetCentered && zoomIsSettled && !isZoomingToIdeal && isGoodComposition(targetBox, exposure: exposureBias, angle: levelAngle))
+    }
+
+    private func startIdealZoom(to zoom: CGFloat) {
+        didApplyIdealZoom = true
+        isZoomingToIdeal = true
+        suggestedZoom = nil
+        zoomSuggestion = ""
+        movementInstruction = "Hold steady"
+        movementSymbol = "scope"
+        guidance = "Centered · moving to \(Self.zoomDescription(zoom)) zoom"
+        AppDiagnostics.shared.log("zoom", "Target centered · animating to local scan ideal zoom \(zoom)x")
+        applyZoom(zoom, rate: 4)
+        finishIdealZoomAnimation(after: 0.65)
+    }
+
+    private func finishIdealZoomAnimation(after duration: TimeInterval) {
+        let animationID = UUID()
+        zoomAnimationID = animationID
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+            guard let self, self.zoomAnimationID == animationID else { return }
+            self.isZoomingToIdeal = false
+            if let box = self.subjectBox {
+                self.updateAdvice(box: box, exposure: self.exposureBias, angle: self.levelAngle)
+                let centered = abs(box.midX - 0.5) <= 0.06 && abs(box.midY - 0.5) <= 0.06
+                self.setFramingReady(centered && self.isGoodComposition(box, exposure: self.exposureBias, angle: self.levelAngle))
+            }
+            AppDiagnostics.shared.log("zoom", "Ideal zoom animation finished")
         }
     }
 
@@ -292,13 +588,25 @@ final class CameraEngine: NSObject, ObservableObject {
                     return
                 }
             }
+            let device = self.cameraDevice
+            let choices = self.makeZoomChoices(for: device)
+            if let device, !self.hasInitializedCameraZoom {
+                let preferred = choices.first ?? 1
+                do {
+                    try device.lockForConfiguration()
+                    device.videoZoomFactor = preferred / max(self.displayZoomMultiplier, 0.01)
+                    device.unlockForConfiguration()
+                    self.hasInitializedCameraZoom = true
+                    AppDiagnostics.shared.log("zoom", "Initial scan zoom selected · displayFactor=\(preferred)x")
+                } catch {
+                    AppDiagnostics.shared.log("zoom", "Could not select initial scan zoom · \(error.localizedDescription)")
+                }
+            }
             if !self.session.isRunning {
                 self.session.startRunning()
                 AppDiagnostics.shared.log("camera", "Capture session startRunning returned · running=\(self.session.isRunning)")
             }
-            let device = self.cameraDevice
             let initialZoom = (device?.videoZoomFactor ?? 1) * self.displayZoomMultiplier
-            let choices = self.makeZoomChoices(for: device)
             Task { @MainActor in
                 self.currentZoom = initialZoom
                 self.zoomChoices = choices
@@ -331,6 +639,12 @@ final class CameraEngine: NSObject, ObservableObject {
         } else {
             displayZoomMultiplier = 1
         }
+        let sensorDimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+        let landscapeAspect = Double(max(sensorDimensions.width, sensorDimensions.height)) /
+            Double(max(1, min(sensorDimensions.width, sensorDimensions.height)))
+        let landscapeHorizontalFOV = Double(device.activeFormat.videoFieldOfView) * .pi / 180
+        portraitHorizontalFieldOfView = CGFloat(2 * atan(tan(landscapeHorizontalFOV / 2) / max(landscapeAspect, 1)))
+        portraitVerticalFieldOfView = CGFloat(landscapeHorizontalFOV)
         let switchOvers = device.virtualDeviceSwitchOverVideoZoomFactors.map { String(describing: $0) }.joined(separator: ",")
         let constituents = device.constituentDevices.map(\.deviceType.rawValue).joined(separator: ",")
         AppDiagnostics.shared.log(
@@ -371,47 +685,13 @@ final class CameraEngine: NSObject, ObservableObject {
                 self.isRawCaptureSupported = self.rawCapturePixelFormatType != nil
                 self.isRawCaptureEnabled = self.isRawCaptureSupported && UserDefaults.standard.bool(forKey: "framewise.rawCaptureEnabled")
             }
+            if let connection = photoOutput.connection(with: .video), connection.isVideoOrientationSupported {
+                connection.videoOrientation = .portrait
+            }
         } else {
             throw CameraSetupError.cannotAddPhotoOutput
         }
-
-        videoOutput.videoSettings = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
-        ]
-        videoOutput.alwaysDiscardsLateVideoFrames = true
-        subjectAnalyzer.onResult = { [weak self] result in
-            Task { @MainActor in
-                guard let self, self.isScanning else { return }
-                self.subjectBox = result.box
-                self.subjectLabel = result.label ?? "Subject"
-                self.previewFrameAspectRatio = result.frameAspectRatio
-                self.scanHasProducedResult = true
-                if result.errorDescription != nil {
-                    self.guidance = "Scan error · share diagnostics"
-                    self.movementInstruction = "Point at a subject"
-                    self.movementSymbol = "viewfinder"
-                    self.suggestedZoom = nil
-                    self.zoomSuggestion = ""
-                    self.consecutiveGoodAnalyses = 0
-                    self.setFramingReady(false)
-                } else {
-                    self.updateAdvice(box: result.box, exposure: self.exposureBias, angle: self.levelAngle)
-                    let ready = result.box.map { self.isGoodComposition($0, exposure: self.exposureBias, angle: self.levelAngle) } ?? false
-                    self.consecutiveGoodAnalyses = ready ? self.consecutiveGoodAnalyses + 1 : 0
-                    self.setFramingReady(self.consecutiveGoodAnalyses >= 2)
-                }
-            }
-        }
-        videoOutput.setSampleBufferDelegate(subjectAnalyzer, queue: analysisQueue)
-        guard session.canAddOutput(videoOutput) else { throw CameraSetupError.cannotAddAnalysisOutput }
-        session.addOutput(videoOutput)
-
-        if let connection = videoOutput.connection(with: .video) {
-            connection.videoOrientation = .portrait
-            AppDiagnostics.shared.log("camera", "Video output connected · orientation=portrait · pixelFormat=BGRA · discardsLateFrames=true")
-        } else {
-            AppDiagnostics.shared.log("camera", "Video output has no video connection")
-        }
+        AppDiagnostics.shared.log("scan", "Live video-frame analysis disabled · each scan uses one temporary camera photo")
     }
 
     private func makeZoomChoices(for device: AVCaptureDevice?) -> [CGFloat] {
@@ -497,9 +777,30 @@ final class CameraEngine: NSObject, ObservableObject {
         zoom == zoom.rounded() ? "\(Int(zoom))x" : "\(zoom)x"
     }
 
+    private static func pointDescription(_ point: CGPoint) -> String {
+        String(format: "x=%.3f y=%.3f", point.x, point.y)
+    }
+
+    private static func boxDescription(_ box: CGRect) -> String {
+        String(format: "x=%.3f y=%.3f w=%.3f h=%.3f", box.minX, box.minY, box.width, box.height)
+    }
+
+    private static func wrappedAngle(_ angle: Double) -> Double {
+        var value = angle
+        while value > .pi { value -= 2 * .pi }
+        while value < -.pi { value += 2 * .pi }
+        return value
+    }
+
     private func updateAdvice(box: CGRect?, exposure: Float, angle: Double) {
-        suggestedZoom = nil
-        zoomSuggestion = ""
+        if !didApplyIdealZoom, !userAdjustedZoomForScan, !isZoomingToIdeal,
+           let idealZoom, abs(idealZoom - currentZoom) > 0.18 {
+            suggestedZoom = idealZoom
+            zoomSuggestion = "Ideal zoom"
+        } else {
+            suggestedZoom = nil
+            zoomSuggestion = ""
+        }
         if abs(angle) > 0.055 {
             movementInstruction = "Level your phone"
             movementSymbol = "level"
@@ -519,9 +820,9 @@ final class CameraEngine: NSObject, ObservableObject {
             return
         }
         guard let box else {
-            movementInstruction = scanHasProducedResult ? "Tap the subject you want" : "Point at something to scan"
-            movementSymbol = scanHasProducedResult ? "hand.tap" : "viewfinder"
-            guidance = scanHasProducedResult ? "Tap any object to lock the guide onto it" : "Finding a subject in the scene…"
+            movementInstruction = scanHasProducedResult ? "Tap a subject to rescan" : "Scan the scene"
+            movementSymbol = scanHasProducedResult ? "hand.tap" : "sparkles"
+            guidance = scanHasProducedResult ? "Tap a subject to choose a new target" : "Capture one frame for a local scan"
             return
         }
         let x = box.midX
@@ -534,7 +835,13 @@ final class CameraEngine: NSObject, ObservableObject {
         if directions.isEmpty {
             movementInstruction = "Hold steady"
             movementSymbol = "scope"
-            guidance = "\(subjectLabel) is centered · take the shot"
+            if isZoomingToIdeal, let idealZoom {
+                guidance = "Centered · moving to \(Self.zoomDescription(idealZoom)) zoom"
+            } else if let idealZoom, abs(idealZoom - currentZoom) > 0.18, !userAdjustedZoomForScan {
+                guidance = "\(subjectLabel) is centered · preparing ideal zoom"
+            } else {
+                guidance = "\(subjectLabel) is centered · take the shot"
+            }
         } else {
             movementInstruction = "Move phone " + directions.joined(separator: " & ")
             if directions.count == 2 {
@@ -549,22 +856,12 @@ final class CameraEngine: NSObject, ObservableObject {
             guidance = "Bring \(subjectLabel.lowercased()) toward the center"
         }
 
-        if directions.isEmpty, box.width < 0.34 {
+        if box.width < 0.34 {
             guidance = "Give \(subjectLabel.lowercased()) a closer, more intentional frame"
-        } else if directions.isEmpty, box.width > 0.58 {
+        } else if box.width > 0.58 {
             guidance = "Back up or widen to give \(subjectLabel.lowercased()) room"
         }
 
-        let targetWidth: CGFloat = 0.40
-        let continuousTarget = min(max(currentZoom * targetWidth / max(box.width, 0.04), zoomChoices.first ?? 1), zoomChoices.last ?? currentZoom)
-        let targetZoom = roundedToOpticalStop(continuousTarget, zoomingIn: box.width < targetWidth)
-        if directions.isEmpty, box.width < 0.34, abs(targetZoom - currentZoom) > 0.18 {
-            suggestedZoom = targetZoom
-            zoomSuggestion = "Frame subject"
-        } else if directions.isEmpty, box.width > 0.58, abs(targetZoom - currentZoom) > 0.18 {
-            suggestedZoom = targetZoom
-            zoomSuggestion = "Widen frame"
-        }
     }
 
     private func roundedToOpticalStop(_ target: CGFloat, zoomingIn: Bool) -> CGFloat {
@@ -604,13 +901,12 @@ final class CameraEngine: NSObject, ObservableObject {
     }
 
     private enum CameraSetupError: LocalizedError {
-        case noCamera, cannotAddCamera, cannotAddPhotoOutput, cannotAddAnalysisOutput
+        case noCamera, cannotAddCamera, cannotAddPhotoOutput
         var errorDescription: String? {
             switch self {
             case .noCamera: "No rear camera is available on this device."
             case .cannotAddCamera: "The camera could not be started."
             case .cannotAddPhotoOutput: "Photo capture is unavailable."
-            case .cannotAddAnalysisOutput: "Live composition analysis is unavailable."
             }
         }
     }
@@ -658,12 +954,70 @@ extension CameraEngine: AVCapturePhotoCaptureDelegate {
     }
 }
 
+private final class ScanPhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate {
+    private let completion: (Result<Data, Error>) -> Void
+    private var photoData: Data?
+    private var processingError: Error?
+
+    init(completion: @escaping (Result<Data, Error>) -> Void) {
+        self.completion = completion
+    }
+
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        if let error {
+            processingError = error
+        } else if !photo.isRawPhoto {
+            photoData = photo.fileDataRepresentation()
+        }
+    }
+
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings, error: Error?) {
+        if let error = error ?? processingError {
+            completion(.failure(error))
+        } else if let photoData {
+            completion(.success(photoData))
+        } else {
+            completion(.failure(NSError(
+                domain: "Framewise.ScanPhoto",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "The camera returned no scan image."]
+            )))
+        }
+    }
+}
+
 private struct SceneAnalysisResult {
     let box: CGRect?
     let label: String?
+    let isManuallySelected: Bool
     let source: String
     let errorDescription: String?
     let frameAspectRatio: CGFloat
+    let confidence: Float
+    let candidateCount: Int
+    let scanJPEGBytes: Int
+
+    init(
+        box: CGRect?,
+        label: String?,
+        isManuallySelected: Bool,
+        source: String,
+        errorDescription: String?,
+        frameAspectRatio: CGFloat,
+        confidence: Float = 0,
+        candidateCount: Int = 0,
+        scanJPEGBytes: Int = 0
+    ) {
+        self.box = box
+        self.label = label
+        self.isManuallySelected = isManuallySelected
+        self.source = source
+        self.errorDescription = errorDescription
+        self.frameAspectRatio = frameAspectRatio
+        self.confidence = confidence
+        self.candidateCount = candidateCount
+        self.scanJPEGBytes = scanJPEGBytes
+    }
 }
 
 private struct DetectedSubject {
@@ -672,83 +1026,99 @@ private struct DetectedSubject {
     let confidence: Float
 }
 
-private final class SubjectAnalyzer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
-    private let stateLock = NSLock()
-    private var enabled = false
-    private var pendingSelectionPoint: CGPoint?
-    private var shouldResetTracking = true
-    private var lastDetectionTime: TimeInterval = 0
-    private var lastTrackingTime: TimeInterval = 0
-    private var lastFrameLogTime: TimeInterval = 0
+private final class SubjectAnalyzer: NSObject {
     private var modelRequest: VNCoreMLRequest?
     private var modelLoadError: String?
-    private var tracker: VNTrackObjectRequest?
-    private var trackedSubject: DetectedSubject?
-    private var manualSelectionActive = false
-    private var latestCandidates: [DetectedSubject] = []
-    private let sequenceHandler = VNSequenceRequestHandler()
-    var onResult: ((SceneAnalysisResult) -> Void)?
 
-    var isEnabled: Bool {
-        get {
-            stateLock.lock()
-            defer { stateLock.unlock() }
-            return enabled
+    func analyzeScanPhoto(
+        _ photoData: Data,
+        selectionPoint: CGPoint?,
+        completion: @escaping (SceneAnalysisResult) -> Void
+    ) {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        guard let (scanJPEG, scanImage) = Self.makeCompactScanImage(from: photoData) else {
+            completion(SceneAnalysisResult(
+                box: nil,
+                label: nil,
+                isManuallySelected: selectionPoint != nil,
+                source: "preprocessError",
+                errorDescription: "Couldn’t prepare the camera frame for on-device analysis. Scan again.",
+                frameAspectRatio: 0.75
+            ))
+            return
         }
-        set {
-            stateLock.lock()
-            let changed = enabled != newValue
-            enabled = newValue
-            if newValue {
-                pendingSelectionPoint = nil
-                shouldResetTracking = true
+
+        let aspectRatio = CGFloat(scanImage.width) / CGFloat(max(1, scanImage.height))
+        var candidates: [DetectedSubject] = []
+        var requestError: String?
+        var source = "YOLOv3Tiny"
+        if let request = ensureModel() {
+            do {
+                try VNImageRequestHandler(cgImage: scanImage, orientation: .up, options: [:]).perform([request])
+                candidates = (request.results as? [VNRecognizedObjectObservation] ?? []).compactMap { observation in
+                    guard let label = observation.labels.first, label.confidence >= 0.12 else { return nil }
+                    let box = observation.boundingBox.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+                    guard box.width > 0.025, box.height > 0.025, box.width * box.height < 0.88 else { return nil }
+                    return DetectedSubject(box: box, label: Self.displayName(label.identifier), confidence: label.confidence)
+                }
+            } catch {
+                requestError = error.localizedDescription
+                AppDiagnostics.shared.log("vision", "One-shot YOLO request failed · \(error.localizedDescription)")
             }
-            stateLock.unlock()
-            if changed {
-                AppDiagnostics.shared.log("scan", newValue ? "Analyzer enabled · waiting for incoming video frames" : "Analyzer disabled")
-            }
+        } else {
+            requestError = modelLoadError
         }
-    }
 
-    func selectSubject(at point: CGPoint) {
-        stateLock.lock()
-        pendingSelectionPoint = CGPoint(x: min(max(point.x, 0), 1), y: min(max(point.y, 0), 1))
-        stateLock.unlock()
-    }
+        if candidates.isEmpty, let salient = saliencySubject(in: scanImage) {
+            candidates = [salient]
+            source = "objectnessSaliency"
+            AppDiagnostics.shared.log("vision", "One-shot objectness saliency fallback selected a region")
+        }
 
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        let now = ProcessInfo.processInfo.systemUptime
-        guard isEnabled else { return }
-        if now - lastFrameLogTime >= 5 {
-            lastFrameLogTime = now
-            if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
-                AppDiagnostics.shared.log("scan", "Video frames arriving · size=\(CVPixelBufferGetWidth(pixelBuffer))x\(CVPixelBufferGetHeight(pixelBuffer)) · format=\(String(format: "0x%08x", CVPixelBufferGetPixelFormatType(pixelBuffer))) · connectionEnabled=\(connection.isEnabled)")
+        var selected: DetectedSubject?
+        let manuallySelected = selectionPoint != nil
+        if let selectionPoint {
+            selected = candidates
+                .filter { $0.box.contains(selectionPoint) || Self.distance($0.box, selectionPoint) < 0.04 }
+                .min { Self.distance($0.box, selectionPoint) < Self.distance($1.box, selectionPoint) }
+            if selected == nil {
+                let width: CGFloat = 0.22
+                let height = min(width * max(aspectRatio, 0.25), 0.30)
+                let box = CGRect(
+                    x: selectionPoint.x - width / 2,
+                    y: selectionPoint.y - height / 2,
+                    width: width,
+                    height: height
+                ).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+                selected = DetectedSubject(box: box, label: "Subject", confidence: 1)
+                source = "manualPoint"
             } else {
-                AppDiagnostics.shared.log("scan", "Video sample arrived without an image pixel buffer")
+                source = "manuallySelectedDetection"
             }
+        } else {
+            selected = Self.bestCandidate(in: candidates)
         }
-        let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
-        guard let imageBuffer else { return }
-        if consumeTrackingReset() {
-            lastDetectionTime = 0
-            lastTrackingTime = 0
-            lastFrameLogTime = 0
-            tracker = nil
-            trackedSubject = nil
-            manualSelectionActive = false
-            latestCandidates = []
-        }
-        let frameWidth = CVPixelBufferGetWidth(imageBuffer)
-        let frameHeight = CVPixelBufferGetHeight(imageBuffer)
-        let frameAspectRatio = CGFloat(frameWidth) / CGFloat(max(1, frameHeight))
-        let selection = takePendingSelection()
-        if selection != nil || now - lastDetectionTime >= 0.70 {
-            lastDetectionTime = now
-            detectSubjects(in: sampleBuffer, frameAspectRatio: frameAspectRatio, selectionPoint: selection)
-        } else if tracker != nil, now - lastTrackingTime >= 0.10 {
-            lastTrackingTime = now
-            trackSubject(in: imageBuffer, frameAspectRatio: frameAspectRatio)
-        }
+
+        let errorDescription = selected == nil && requestError != nil
+            ? "On-device subject scan failed. Tap a subject to frame it manually or scan again."
+            : nil
+        let elapsed = Int((ProcessInfo.processInfo.systemUptime - startedAt) * 1_000)
+        let result = SceneAnalysisResult(
+            box: selected?.box,
+            label: selected?.label,
+            isManuallySelected: manuallySelected,
+            source: source,
+            errorDescription: errorDescription,
+            frameAspectRatio: aspectRatio,
+            confidence: selected?.confidence ?? 0,
+            candidateCount: candidates.count,
+            scanJPEGBytes: scanJPEG.count
+        )
+        AppDiagnostics.shared.log(
+            "vision",
+            "One-shot scan inference finished · ms=\(elapsed) · image=\(scanImage.width)x\(scanImage.height) · jpegBytes=\(scanJPEG.count) · candidates=\(candidates.count) · source=\(source) · selected=\(selected?.label ?? "none") · box=\(selected.map { Self.boxText($0.box) } ?? "none") · network=none"
+        )
+        completion(result)
     }
 
     private func ensureModel() -> VNCoreMLRequest? {
@@ -770,7 +1140,7 @@ private final class SubjectAnalyzer: NSObject, AVCaptureVideoDataOutputSampleBuf
             request.imageCropAndScaleOption = .scaleFit
             request.preferBackgroundProcessing = false
             modelRequest = request
-            AppDiagnostics.shared.log("vision", "YOLOv3Tiny loaded · 80 on-device object classes · Core ML computeUnits=all · confidenceThreshold=0.16 · iouThreshold=0.55")
+            AppDiagnostics.shared.log("vision", "YOLOv3Tiny loaded · one inference per scan · Core ML computeUnits=all · network=none")
             return request
         } catch {
             modelLoadError = error.localizedDescription
@@ -779,169 +1149,39 @@ private final class SubjectAnalyzer: NSObject, AVCaptureVideoDataOutputSampleBuf
         }
     }
 
-    private func detectSubjects(in sampleBuffer: CMSampleBuffer, frameAspectRatio: CGFloat, selectionPoint: CGPoint? = nil) {
-        let startedAt = ProcessInfo.processInfo.systemUptime
-        var found: [DetectedSubject] = []
-        var requestError: String?
-        if let request = ensureModel() {
-            let handler = VNImageRequestHandler(cmSampleBuffer: sampleBuffer, orientation: .up)
-            do {
-                try handler.perform([request])
-                found = (request.results as? [VNRecognizedObjectObservation] ?? []).compactMap { observation in
-                    guard let label = observation.labels.first, label.confidence >= 0.12 else { return nil }
-                    let box = observation.boundingBox.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-                    guard box.width > 0.025, box.height > 0.025, box.width * box.height < 0.88 else { return nil }
-                    return DetectedSubject(box: box, label: Self.displayName(label.identifier), confidence: label.confidence)
-                }
-            } catch {
-                requestError = error.localizedDescription
-                AppDiagnostics.shared.log("vision", "YOLO request failed · \(error.localizedDescription)")
-            }
-        } else {
-            requestError = modelLoadError
+    private static func makeCompactScanImage(from photoData: Data) -> (Data, CGImage)? {
+        guard let source = CGImageSourceCreateWithData(photoData as CFData, nil) else { return nil }
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 768,
+            kCGImageSourceShouldCache: false
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else { return nil }
+        let jpegBuffer = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(jpegBuffer as CFMutableData, "public.jpeg" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, thumbnail, [kCGImageDestinationLossyCompressionQuality: 0.53] as CFDictionary)
+        guard CGImageDestinationFinalize(destination),
+              let compressedSource = CGImageSourceCreateWithData(jpegBuffer as CFData, nil),
+              let compressedImage = CGImageSourceCreateImageAtIndex(compressedSource, 0, nil) else {
+            return nil
         }
-
-        if found.isEmpty, let fallback = saliencySubject(in: sampleBuffer) {
-            found = [fallback]
-            AppDiagnostics.shared.log("vision", "Object detector fallback · objectness saliency selected a region")
-        }
-        latestCandidates = found
-
-        if let selectionPoint {
-            manualSelectionActive = true
-            lockSubject(at: selectionPoint, frameAspectRatio: frameAspectRatio)
-        } else if trackedSubject == nil, let candidate = Self.bestCandidate(in: found) {
-            trackedSubject = candidate
-            startTracking(candidate)
-            AppDiagnostics.shared.log("vision", "Automatic subject lock · label=\(candidate.label) · confidence=\(String(format: "%.2f", candidate.confidence)) · box=\(Self.boxText(candidate.box))")
-        } else if let trackedSubject, let match = Self.match(for: trackedSubject, in: found) {
-            self.trackedSubject = DetectedSubject(box: match.box, label: trackedSubject.label == "Subject" ? match.label : trackedSubject.label, confidence: match.confidence)
-            startTracking(self.trackedSubject!)
-            AppDiagnostics.shared.log("vision", "Detector refreshed tracked target · label=\(self.trackedSubject!.label) · confidence=\(String(format: "%.2f", match.confidence))")
-        } else if let trackedSubject {
-            if manualSelectionActive, tracker == nil {
-                startTracking(trackedSubject)
-                AppDiagnostics.shared.log("vision", "Detector found no replacement · restarted tracking the manually selected region")
-            } else {
-                AppDiagnostics.shared.log("vision", "Detector refreshed · kept current Vision tracker target")
-            }
-        } else if let requestError {
-            publish(source: "error", frameAspectRatio: frameAspectRatio, errorDescription: requestError)
-            return
-        }
-
-        let elapsed = Int((ProcessInfo.processInfo.systemUptime - startedAt) * 1_000)
-        let detections = found.map { "\($0.label):\(String(format: "%.2f", $0.confidence))@\(Self.boxText($0.box))" }.joined(separator: ";")
-        AppDiagnostics.shared.log("vision", "Object scan completed · ms=\(elapsed) · candidates=\(found.count) · [\(detections)] · selected=\(trackedSubject?.label ?? "none") · frame=\(Int(frameAspectRatio * 1_000))‰")
-        publish(source: found.isEmpty ? "empty" : "yoloObject", frameAspectRatio: frameAspectRatio, errorDescription: requestError)
+        return (jpegBuffer as Data, compressedImage)
     }
 
-    private func trackSubject(in pixelBuffer: CVPixelBuffer, frameAspectRatio: CGFloat) {
-        guard let tracker else { return }
-        do {
-            try sequenceHandler.perform([tracker], on: pixelBuffer, orientation: .up)
-            guard let next = (tracker.results as? [VNDetectedObjectObservation])?.first,
-                  next.confidence >= 0.12,
-                  next.boundingBox.width > 0.02,
-                  next.boundingBox.height > 0.02 else {
-                self.tracker = nil
-                if manualSelectionActive {
-                    AppDiagnostics.shared.log("vision", "Vision tracker lost the manually selected subject · retaining its last region for detector recovery")
-                } else {
-                    trackedSubject = nil
-                    AppDiagnostics.shared.log("vision", "Vision tracker lost the subject · returning to object scan")
-                }
-                publish(source: "trackingLost", frameAspectRatio: frameAspectRatio)
-                return
-            }
-            tracker.inputObservation = next
-            if let current = trackedSubject {
-                trackedSubject = DetectedSubject(box: next.boundingBox, label: current.label, confidence: next.confidence)
-            }
-            publish(source: "visionTracker", frameAspectRatio: frameAspectRatio)
-        } catch {
-            self.tracker = nil
-            if manualSelectionActive {
-                AppDiagnostics.shared.log("vision", "Vision tracking failed for the manually selected subject · retaining its last region · \(error.localizedDescription)")
-            } else {
-                trackedSubject = nil
-                AppDiagnostics.shared.log("vision", "Vision tracking failed · \(error.localizedDescription)")
-            }
-            publish(source: "trackingError", frameAspectRatio: frameAspectRatio)
-        }
-    }
-
-    private func lockSubject(at point: CGPoint, frameAspectRatio: CGFloat) {
-        let candidate = latestCandidates.min { Self.distance($0.box, point) < Self.distance($1.box, point) }
-        if let candidate, candidate.box.contains(point) || Self.distance(candidate.box, point) < 0.24 {
-            trackedSubject = candidate
-            AppDiagnostics.shared.log("guidance", "Tapped detected subject · label=\(candidate.label) · confidence=\(String(format: "%.2f", candidate.confidence)) · box=\(Self.boxText(candidate.box))")
-        } else {
-            let width: CGFloat = 0.22
-            let height = min(0.22 * max(frameAspectRatio, 0.25), 0.30)
-            let rect = CGRect(x: point.x - width / 2, y: point.y - height / 2, width: width, height: height)
-                .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-            trackedSubject = DetectedSubject(box: rect, label: "Subject", confidence: 1)
-            AppDiagnostics.shared.log("guidance", "Tapped region without an object label · tracking a custom subject region · box=\(Self.boxText(rect))")
-        }
-        if let trackedSubject { startTracking(trackedSubject) }
-    }
-
-    private func startTracking(_ subject: DetectedSubject) {
-        let observation = VNDetectedObjectObservation(boundingBox: subject.box)
-        if let tracker {
-            // Re-seed the existing request. Creating a new Vision tracker on each
-            // detector refresh exhausts Vision's per-type tracker limit.
-            tracker.inputObservation = observation
-            tracker.trackingLevel = .accurate
-            AppDiagnostics.shared.log("vision", "Re-seeded existing Vision tracker · label=\(subject.label)")
-        } else {
-            let request = VNTrackObjectRequest(detectedObjectObservation: observation)
-            request.trackingLevel = .accurate
-            tracker = request
-            AppDiagnostics.shared.log("vision", "Created Vision tracker · label=\(subject.label)")
-        }
-    }
-
-    private func saliencySubject(in sampleBuffer: CMSampleBuffer) -> DetectedSubject? {
+    private func saliencySubject(in image: CGImage) -> DetectedSubject? {
         let request = VNGenerateObjectnessBasedSaliencyImageRequest()
         request.preferBackgroundProcessing = false
         do {
-            try VNImageRequestHandler(cmSampleBuffer: sampleBuffer, orientation: .up).perform([request])
+            try VNImageRequestHandler(cgImage: image, orientation: .up, options: [:]).perform([request])
             let candidate = request.results?.first?.salientObjects?
                 .filter { $0.confidence > 0.08 && $0.boundingBox.width * $0.boundingBox.height < 0.85 }
                 .max(by: { $0.confidence < $1.confidence })
             return candidate.map { DetectedSubject(box: $0.boundingBox, label: "Subject", confidence: $0.confidence) }
         } catch {
-            AppDiagnostics.shared.log("vision", "Objectness fallback failed · \(error.localizedDescription)")
+            AppDiagnostics.shared.log("vision", "One-shot objectness fallback failed · \(error.localizedDescription)")
             return nil
         }
-    }
-
-    private func publish(source: String, frameAspectRatio: CGFloat, errorDescription: String? = nil) {
-        onResult?(SceneAnalysisResult(
-            box: trackedSubject?.box,
-            label: trackedSubject?.label,
-            source: source,
-            errorDescription: errorDescription,
-            frameAspectRatio: frameAspectRatio
-        ))
-    }
-
-    private func takePendingSelection() -> CGPoint? {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        let point = pendingSelectionPoint
-        pendingSelectionPoint = nil
-        return point
-    }
-
-    private func consumeTrackingReset() -> Bool {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        let shouldReset = shouldResetTracking
-        shouldResetTracking = false
-        return shouldReset
     }
 
     private static func bestCandidate(in candidates: [DetectedSubject]) -> DetectedSubject? {
@@ -956,21 +1196,6 @@ private final class SubjectAnalyzer: NSObject, AVCaptureVideoDataOutputSampleBuf
         let area = max(subject.box.width * subject.box.height, 0.001)
         let sizeFit = max(0, 1 - abs(log(area / 0.12)) / 4)
         return CGFloat(subject.confidence) * 0.38 + centrality * 0.42 + sizeFit * 0.20
-    }
-
-    private static func match(for current: DetectedSubject, in candidates: [DetectedSubject]) -> DetectedSubject? {
-        candidates
-            .filter { $0.label == current.label || $0.label == "Subject" }
-            .map { ($0, intersectionOverUnion(current.box, $0.box)) }
-            .filter { $0.1 > 0.08 || distance($0.0.box, CGPoint(x: current.box.midX, y: current.box.midY)) < 0.15 }
-            .max { $0.1 < $1.1 }?.0
-    }
-
-    private static func intersectionOverUnion(_ a: CGRect, _ b: CGRect) -> CGFloat {
-        let intersection = a.intersection(b)
-        guard !intersection.isNull else { return 0 }
-        let union = a.width * a.height + b.width * b.height - intersection.width * intersection.height
-        return union > 0 ? intersection.width * intersection.height / union : 0
     }
 
     private static func distance(_ box: CGRect, _ point: CGPoint) -> CGFloat {

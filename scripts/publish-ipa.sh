@@ -32,7 +32,7 @@ feed = json.loads(path.read_text())
 app = feed["apps"][0]
 feed["sourceURL"] = "https://github.com/hesm4tt/framewise-ipa/releases/latest/download/framewise.json"
 app["bundleIdentifier"] = "com.framewise.camera"
-app["localizedDescription"] = "On-device subject tracking, movement cues, optical zoom stops matched to the iPhone camera system, and optional RAW capture."
+app["localizedDescription"] = "One-shot on-device subject detection, motion-anchored framing guidance, tap-to-retarget, automatic suggested zoom, and optional RAW capture."
 app["permissions"] = [p for p in app.get("permissions", []) if p.get("type") != "photos"]
 versions = app.setdefault("versions", [])
 versions[:] = [entry for entry in versions if entry.get("version") != version]
@@ -42,7 +42,7 @@ versions.insert(0, {
     "downloadURL": f"https://github.com/hesm4tt/framewise-ipa/releases/download/v{version}/Framewise.ipa",
     "size": size,
     "minOSVersion": "15.0",
-    "localizedDescription": "On-device subject tracking, movement cues, smooth suggested zoom, device-matched optical stops, and optional RAW capture."
+    "localizedDescription": "Scans one temporary still on-device, guides re-aiming with a motion-anchored target, eases to a recommended zoom, then captures the full-quality photo. No scan upload or per-shot AI service charge."
 })
 path.write_text(json.dumps(feed, indent=2, ensure_ascii=False) + "\n")
 PY
@@ -53,7 +53,7 @@ else
   gh release create "$TAG" "$IPA" "$FEED" \
     --repo "$REPOSITORY" \
     --title "Framewise $VERSION" \
-    --notes "Adapts optical and optical-quality zoom stops to the iPhone's rear cameras and sensor resolution. Adds optional ProRAW/Bayer RAW + processed capture at the largest available photo dimensions, and preserves the original processed image. On-device AI with no per-use service cost. Build $BUILD."
+    --notes "Adds a one-shot on-device subject scan and motion-anchored framing guidance. Tap a subject to retarget, re-aim until the guide centers, and Framewise eases to a recommended optical zoom before you capture. The temporary scan is reduced and analyzed on the iPhone; it is not uploaded or used as the final photo. The shutter takes a separate full-resolution image, with optional RAW capture. No AI API or per-scan service charge. Build $BUILD."
 fi
 
 publish_repository_file() {

@@ -167,7 +167,7 @@ struct CameraView: View {
                     .tracking(2.2)
                 HStack(spacing: 5) {
                     Circle().fill(camera.status == .ready ? Color.green : FramewiseStyle.accent).frame(width: 5, height: 5)
-                    Text(camera.status == .ready ? "ON DEVICE · LIVE" : "CAMERA")
+                    Text(camera.status == .ready ? "CAMERA READY" : "CAMERA")
                         .font(.system(size: 9, weight: .medium, design: .monospaced))
                         .tracking(0.8)
                         .foregroundStyle(FramewiseStyle.muted)
@@ -207,6 +207,13 @@ struct CameraView: View {
                     camera.setExposure(0)
                 } label: {
                     Label("Reset exposure", systemImage: "arrow.counterclockwise")
+                }
+                if camera.isScanning {
+                    Button(role: .destructive) {
+                        camera.stopScanning()
+                    } label: {
+                        Label("Clear framing guide", systemImage: "xmark.circle")
+                    }
                 }
                 Toggle(isOn: Binding(
                     get: { camera.isRawCaptureEnabled },
@@ -252,17 +259,23 @@ struct CameraView: View {
                 .frame(width: 28)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(camera.isScanning
-                     ? (camera.subjectBox == nil ? "SEARCHING FOR A SUBJECT" : "TRACKING · \(camera.subjectLabel.uppercased())")
-                     : "FRAME GUIDE PAUSED")
+                Text(guideStatusTitle)
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .tracking(1.15)
                     .foregroundStyle(FramewiseStyle.accent)
-                Text(camera.isScanning ? camera.guidance : "Start the guide for subject tracking and zoom suggestions")
+                Text(camera.guidance)
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                     .foregroundStyle(.white)
+                if camera.isScanning {
+                    Text(camera.isScanPending
+                         ? "ONE FRAME · ANALYZED ON THIS IPHONE"
+                         : "TAP A SUBJECT TO SCAN AND RETARGET")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .tracking(0.55)
+                        .foregroundStyle(.white.opacity(0.58))
+                }
             }
 
             Spacer(minLength: 4)
@@ -270,7 +283,7 @@ struct CameraView: View {
             if camera.isScanning, let zoom = camera.suggestedZoom {
                 Button {
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    camera.setZoom(zoom)
+                    camera.applySuggestedZoom()
                     AppDiagnostics.shared.log("guidance", "Applied suggested zoom \(zoom)x · reason=\(camera.zoomSuggestion)")
                 } label: {
                     VStack(spacing: 3) {
@@ -287,20 +300,12 @@ struct CameraView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Use suggested \(zoomLabel(zoom)) zoom")
-            } else if !camera.isScanning {
-                Button {
-                    camera.startScanning()
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                } label: {
-                    Text("START GUIDE")
-                        .font(.system(size: 9, weight: .heavy, design: .rounded))
-                        .tracking(0.5)
-                        .foregroundStyle(.black)
-                        .padding(.horizontal, 10)
-                        .frame(height: 38)
-                        .background(FramewiseStyle.accent, in: Capsule())
-                }
-                .buttonStyle(.plain)
+            } else if camera.isScanPending {
+                ProgressView().tint(FramewiseStyle.accent).frame(width: 38, height: 38)
+            } else if let zoom = camera.idealZoom, camera.isZoomingToIdeal {
+                Text("ZOOMING TO \(zoomLabel(zoom))")
+                    .font(.system(size: 8, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(FramewiseStyle.accent)
             }
         }
         .padding(.horizontal, 13)
@@ -404,26 +409,31 @@ struct CameraView: View {
                 .animation(.easeInOut(duration: 0.28), value: camera.isFramingReady)
             }
             .buttonStyle(.plain)
-            .disabled(camera.isCapturing || camera.status != .ready)
+            .disabled(camera.isCapturing || camera.isScanPending || camera.status != .ready)
             .accessibilityLabel("Take photo")
 
             Spacer()
 
-            Button { camera.toggleScanning() } label: {
+            Button { camera.startScanning() } label: {
                 VStack(spacing: 3) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 17, weight: .semibold))
-                    Text(camera.isScanning ? "GUIDE ON" : "GUIDE OFF")
+                    if camera.isScanPending {
+                        ProgressView().tint(.black).scaleEffect(0.72)
+                    } else {
+                        Image(systemName: camera.scanHasProducedResult ? "arrow.clockwise" : "sparkles")
+                            .font(.system(size: 17, weight: .semibold))
+                    }
+                    Text(camera.isScanPending ? "SCANNING" : (camera.scanHasProducedResult ? "SCAN AGAIN" : "SCAN SCENE"))
                         .font(.system(size: 7, weight: .heavy, design: .monospaced))
                         .tracking(0.3)
                 }
-                .foregroundStyle(camera.isScanning ? .black : FramewiseStyle.accent)
-                .frame(width: 52, height: 48)
-                .background(camera.isScanning ? FramewiseStyle.accent : .black.opacity(0.6), in: RoundedRectangle(cornerRadius: 15))
+                .foregroundStyle(.black)
+                .frame(width: 72, height: 48)
+                .background(FramewiseStyle.accent, in: RoundedRectangle(cornerRadius: 15))
                 .overlay(RoundedRectangle(cornerRadius: 15).stroke(FramewiseStyle.accent.opacity(0.8), lineWidth: 1))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(camera.isScanning ? "Pause frame guide" : "Start frame guide")
+            .disabled(camera.isScanPending || camera.status != .ready)
+            .accessibilityLabel(camera.isScanPending ? "Scanning scene" : (camera.scanHasProducedResult ? "Scan scene again" : "Scan scene"))
         }
         .foregroundStyle(.white)
         .padding(.bottom, 8)
@@ -474,14 +484,22 @@ struct CameraView: View {
     private func startCameraGuide() {
         camera.start()
         camera.startMotion()
-        camera.startScanning()
+    }
+
+    private var guideStatusTitle: String {
+        if camera.isScanPending { return "SCANNING ONE FRAME" }
+        guard camera.isScanning else { return "READY TO SCAN" }
+        if camera.subjectBox == nil {
+            return camera.scanHasProducedResult ? "NO SUBJECT FOUND" : "READY TO SCAN"
+        }
+        return "\(camera.isSubjectLocked ? "TARGET LOCKED" : "TARGET FOUND") · \(camera.subjectLabel.uppercased())"
     }
 
     private var firstRunGuide: some View {
         let pages: [(String, String, String)] = [
-            ("Make every photo\nfeel intentional.", "A quiet live guide helps shape the shot you already see.", "viewfinder"),
-            ("Point. Lock.\nCompose.", "We circle real subjects. Tap one, follow the move cue, then ease to a suggested zoom.", "scope"),
-            ("Ready when\nyou are.", "Point at anything. Your iPhone finds a subject and helps you frame the shot.", "camera.aperture")
+            ("Make every photo\nfeel intentional.", "Scan one camera frame, then follow a quiet guide to shape the shot you already see.", "viewfinder"),
+            ("Scan. Aim.\nCompose.", "A target is picked on your iPhone. Move until it centers; the camera eases to its ideal zoom.", "scope"),
+            ("Ready when\nyou are.", "Your final photo is captured at full camera quality. The scan frame is never used as the photo.", "camera.aperture")
         ]
         let page = pages[min(onboardingPage, pages.count - 1)]
         return ZStack {

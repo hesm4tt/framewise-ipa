@@ -5,8 +5,9 @@ Framewise is a native iPhone camera app inspired by the supplied Framed pages an
 ## What it does
 
 - Live rear-camera preview with tap-to-focus, flash, exposure bias, and zoom stops derived from the iPhone's actual rear-camera lenses and sensor resolution. The app uses AVFoundation's virtual camera so the device can switch among its physical lenses.
-- Three-screen first-run setup explains the camera flow before asking for permission. The live guide detects and names common objects on device, draws a moving subject box and center connector, and uses Vision tracking to keep the guide attached as the camera moves. Tap a subject to prioritize it; that choice stays locked through detector refreshes and tracking recovery until you tap another subject.
-- Direction cues tell you which way to move the phone. Once the subject is centered, a one-tap suggested zoom uses a smooth AVFoundation zoom ramp and can land between the model's optical stops. Core Motion supplies horizon guidance.
+- Three-screen first-run setup explains the camera flow before asking for permission. A scan request captures one temporary rear-camera still, normalizes its orientation, resizes it to at most 768 px, JPEG-compresses it locally, and runs the bundled detector once. Tap a subject to make a new one-shot scan centered on that point.
+- The selected scan point is held as a motion-anchored target using Core Motion attitude updates; Vision does not continuously analyze preview frames or track the subject visually. Direction cues guide physical re-aiming. When the target centers, the camera eases to a device-supported ideal zoom.
+- The temporary scan image is used only for on-device inference and is discarded. It is never used as the final photo or cropped into one. The shutter captures a separate full-resolution camera photo at the current lens and zoom.
 - A clearly labeled **Take Photo** shutter opens the captured image in the local film and print workflow.
 - Full-resolution, quality-prioritized capture uses the largest still dimensions exposed by the active camera, including 48 MP modes when that iPhone camera supports them. **Camera options → RAW + Processed** adds a DNG to the capture, preferring Apple ProRAW when supported and otherwise using Bayer RAW.
 - A bounded, local diagnostics log can be exported from **Camera options → Share diagnostics**. It records camera and Vision metadata and errors, not photo or video content.
@@ -14,7 +15,7 @@ Framewise is a native iPhone camera app inspired by the supplied Framed pages an
 - Seven local film looks and five print treatments; the edited image is rendered only when you save or share.
 - A private in-app gallery. Photos stay in the app’s Documents folder until you choose to share one.
 
-There is no server, account, subscription, analytics SDK, or network request in the app. Object detection, tracking, composition advice, film looks, and the gallery run on the phone. The bundled 8.9 MB Apple Core ML YOLOv3 Tiny model recognizes 80 common object classes, so the guide has no per-use service cost. The only runtime permission requested is camera access; the app does not request access to the system Photos library.
+There is no server, account, subscription, analytics SDK, or network request in the app. Subject detection, motion-based framing guidance, zoom recommendations, film looks, and the gallery run on the phone. The bundled 8.9 MB Apple Core ML YOLOv3 Tiny model recognizes 80 common object classes, so scans have no per-use service cost. The only runtime permission requested is camera access; the app does not request access to the system Photos library.
 
 ## Sideloading and compatibility
 
@@ -34,7 +35,7 @@ You need a Mac with the full Xcode app and iOS SDK installed. Open `Framewise.xc
 
 The script writes an unsigned `build/Framewise.ipa`. LiveContainer can run unsigned guests in its JIT mode and uses its configured signing certificate when signing is required. SideStore can sign the same IPA with its configured Apple account. The package script does not change the Mac’s selected Xcode or signing settings.
 
-The photo capture uses the largest dimensions the active camera exposes at runtime rather than assuming a fixed megapixel count. The zoom controls inspect the physical rear-camera lenses, their fields of view, and sensor sizes: a single-camera 48 MP iPhone gets a 1×/2× pair, a model with an Ultra Wide adds 0.5×, and a telephoto adds its own focal-length stop (with a second optical-quality crop when that sensor supports it). Suggested zooms prefer these stops when they fit the framing goal. This adapts to newer models without a private model-identifier table and retains the iOS 15 app target.
+The scan still uses the smallest photo dimensions advertised by the active camera format where supported, then is reduced and recompressed to a 768 px JPEG before local inference. Final photo capture uses the largest dimensions the active camera exposes at runtime rather than assuming a fixed megapixel count. The zoom controls inspect the physical rear-camera lenses, their fields of view, and sensor sizes: a single-camera 48 MP iPhone gets a 1×/2× pair, a model with an Ultra Wide adds 0.5×, and a telephoto adds its own focal-length stop (with a second optical-quality crop when that sensor supports it). This adapts to newer models without a private model-identifier table and retains the iOS 15 app target.
 
 RAW is optional because DNG files are much larger and standard Bayer RAW skips some of the image-capture pipeline’s computational processing. On supported devices, Framewise enables Apple ProRAW before starting the capture session and prefers it when available. Captures include a normal full-resolution processed image for preview and film looks; the DNG remains available as a separate original.
 
